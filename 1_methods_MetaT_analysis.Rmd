@@ -1,0 +1,713 @@
+---
+title: "meta-transcriptomic analysis"
+author: "Laura Seidel"
+date: "6/11/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libaries}
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(vegan))
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(RColorBrewer))
+suppressPackageStartupMessages(library(factoextra))
+suppressPackageStartupMessages(library(phyloseq))
+suppressPackageStartupMessages(library(gplots))
+suppressPackageStartupMessages(library(corrplot))
+suppressPackageStartupMessages(library(ggVennDiagram))
+suppressPackageStartupMessages(library(ggpubr))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(DESeq2))
+suppressPackageStartupMessages(library(limma))
+suppressPackageStartupMessages(library(pheatmap))
+suppressPackageStartupMessages(library(rafalib))
+suppressPackageStartupMessages(library(ranacapa))
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(plyr))
+suppressPackageStartupMessages(library(reshape2))
+suppressPackageStartupMessages(library(scales))
+
+```
+
+```{r data tables}
+
+###raw gene counts
+co <- read.table("../../../raw_data_metaT/smallTS_MH.gene.counts.matrix", header = T, row.names = 1)
+cr <- ceiling(co)
+    ##Filter gene counts to 1.2 million
+    keep_genes <- rowSums( cr > 5 ) >= 3
+    cf <- cr[keep_genes,]
+    
+
+
+### meta table
+mo <- read.table("../../../raw_data_metaT/meta_metaT.tsv", sep = "\t", header = T, row.names = 1, stringsAsFactors = FALSE)
+mr <- mo[order(match(rownames(mo), colnames(cr))),]
+
+meta <- read_tsv("../../../raw_data_metaT/meta_metaT.tsv") %>%
+        dplyr::rename(sample = name)
+
+
+##Differential expressed genes between bays
+diffexpr <- read_tsv("../../../raw_data_metaT/Temp_vs_ctrl_res_func_a_taxa.tsv")%>%
+            replace_na(list(COG="Unknown"))%>%
+            replace_na(list(Gene_name="Unknown"))%>%
+            replace_na(list(Product="Unknown"))%>%
+            replace_na(list(superkingdom="Unknown"))%>%
+            replace_na(list(phylum="Unknown"))%>%
+            replace_na(list(class="Unknown"))%>%
+            replace_na(list(order="Unknown"))%>%
+            replace_na(list(family="Unknown"))%>%
+            replace_na(list(genus="Unknown"))%>%
+            replace_na(list(species="Unknown"))
+
+
+###TPM values of each SAMPLE
+TPM_filtered <- read_tsv("../../../raw_data_metaT/Filtered_genes.TPM.tsv") 
+TPM_filtered <- TPM_filtered%>% 
+          dplyr::rename (ID = X1) %>%
+          gather(sample,TPM, 2:ncol(.))%>%
+          filter(TPM > 0)
+
+
+
+###Taxa annotated based on Prokka for each ID
+Filtered_taxa <- read.delim("../../../raw_data_metaT/Filtered_seqs.taxa.txt", header=TRUE) %>% 
+                  dplyr::rename(ID=X._contig)
+
+
+###Prokka annotation for each ID
+Function_Prokka <- read.delim("../../../raw_data_metaT/PROKKA_04192021_limited3.txt", header=TRUE)%>%
+                    mutate_if(is.character, list(~na_if(.,""))) %>%
+                    replace_na(list(gene="Unknown"))
+                    
+Function_Prokka$gene <- gsub('(^.*)_.*', '\\1', Function_Prokka$gene)
+
+
+
+###emapper annotation (eggnog etc.) for each Prokka ID (only CDS, coding sequences)
+emapper_annotations <- read.delim("../../../raw_data_metaT/eggnog.emapper.annotations.txt", header=T) 
+
+
+#KEGG list overview
+KEGGlist <- read.delim("../../../raw_data_metaT/ko00001_ed.txt")
+
+
+
+##Combine tables
+MetaT.data <- TPM_filtered %>% 
+  inner_join(Filtered_taxa, by="ID") %>% 
+  inner_join(Function_Prokka, by="ID")%>%
+  inner_join(emapper_annotations, by="prokka_ID") %>% 
+  left_join(meta, by="sample")
+
+
+
+##Groups based on KEGG 
+
+MetaT.data$KEGG_ko <- gsub('ko\\:', '', MetaT.data$KEGG_ko)
+
+MetaT.data <- MetaT.data %>% 
+  dplyr::rename(KO = KEGG_ko)
+
+KEGG_filtered <- MetaT.data %>% 
+  inner_join(KEGGlist, by="KO") 
+
+
+
+```
+
+
+```{r Normalization of data for PCA}
+
+mr$bay <- factor(mr$bay)
+d <- DESeq2::DESeqDataSetFromMatrix(countData=cf,colData=mr,design=~bay)
+d <- DESeq2::estimateSizeFactors(d,type="ratio")
+d <- DESeq2::estimateDispersions(d)
+cv <- as.data.frame(assay(varianceStabilizingTransformation(d,blind=T)),check.names=F)
+
+#write.csv(cv,"./data/gene_counts_vst.csv",quote=FALSE)
+
+boxplot(cv,ylab=expression('Log'[2]~'Read counts'),las=2,main="VST")
+
+```
+
+```{r PCA based on normalized data}
+##Run and plot PCA
+pcaobj1 <- prcomp(x=t(cv))
+as.data.frame(pcaobj1$x) %>%
+  rownames_to_column(var = "sampleID") %>%
+  full_join(mr %>% rownames_to_column(var = "sampleID"), by = "sampleID") %>%
+  ggplot(aes(PC1,PC2,color=bay))+
+   scale_color_manual(values=c("blue","orange"))+
+  geom_point(size = 5)+
+  theme_bw()
+
+
+summary(pcaobj1)
+
+##Check for % explained by first and second axis
+eigs <- pcaobj1$sdev^2
+eigs[1] / sum(eigs)
+
+rbind(
+  SD = sqrt(eigs),
+  Proportion = eigs/sum(eigs),
+  Cumulative = cumsum(eigs)/sum(eigs))
+```
+
+
+```{r Data preparation}
+
+### Change NA to Unknown
+KEGG_filtered_all <- KEGG_filtered   %>%
+  mutate_if(is.character, list(~na_if(.,""))) %>%
+  mutate_if(is.character, list(~na_if(.,"no_support")))%>%
+  replace_na(list(phylum="xx_Unknown"))%>%
+  replace_na(list(class="xx_Unknown"))%>%
+  replace_na(list(order="xx_Unknown"))%>%
+  replace_na(list(family="xx_Unknown"))%>%
+  replace_na(list(genus="xx_Unknown"))%>%
+  replace_na(list(species="xx_Unknown"))%>%
+  replace_na(list(superkingdom="xx_Unknown"))
+
+
+## Filtered for only Bacteria
+KEGG_filtered_bac  <-KEGG_filtered_all%>%
+  filter(superkingdom %in% "Bacteria")
+
+
+##Known differential expressed genes
+
+diff_expre_TPM <- diffexpr %>%
+  left_join(KEGG_filtered, by=c("ID","phylum","superkingdom","class","order","family","genus","species"))%>%
+  filter(superkingdom %in% c("Bacteria","Archaea"))%>%
+  replace_na(list(bay="Unknown"))%>%
+  filter(!bay %in% "Unknown")%>%
+  mutate_if(is.character, list(~na_if(.,"no_support")))%>%
+  replace_na(list(phylum="xx_Unclassified"))%>%
+  replace_na(list(gene="Unknown"))
+
+known_diff_expr <- diff_expre_TPM  %>%
+                    filter(!gene %in% "Unknown")
+
+##Known high differential expressed genes LFC 5 & their groups 
+## Sort by ordered padj
+known_diff_expr$groups <- as.factor(known_diff_expr$Thirdhighest)
+levels(known_diff_expr$groups) <- 
+  list("e_Chaperones" = c("03110 Chaperones and folding catalysts [BR:ko03110]"),
+       "a_Photosynthesis" = c("00195 Photosynthesis [PATH:ko00195]","00194 Photosynthesis proteins [BR:ko00194]",
+                              "00196 Photosynthesis - antenna proteins [PATH:ko00196]"),
+       "b_Nitrogen" = c("00910 Nitrogen metabolism [PATH:ko00910]"),
+       "c_Sulfur" = c ("00920 Sulfur metabolism [PATH:ko00920]" ),
+       "d_Methane" = c("00680 Methane metabolism [PATH:ko00680]"),
+       "f_repair and recombination"=c("03400 DNA repair and recombination proteins [BR:ko03400]")
+      )
+
+known_diff_expr$groups<- as.character(known_diff_expr$groups)
+known_diff_expr$groups[is.na(known_diff_expr$groups)] <- "xx_Other"
+
+known_diff_expr_w_o <- known_diff_expr%>%
+                      filter(! groups %in% "xx_Other")
+
+known_high <- known_diff_expr %>%
+    #filter(!superkingdom %in% "Bacteria")%>%
+   filter(!between(log2FoldChange, -5, 5))%>%
+    filter(! groups %in% "xx_Other")
+
+known_high$groups<- as.factor(known_high$groups)
+
+
+```
+
+```{r Kingdom overview - barplot}
+ 
+KEGG_filtered_all$month <- factor(KEGG_filtered_all$month, levels = c("may","june","november","march"))
+ 
+KEGG_filtered_all %>%
+  dplyr::group_by(bay,sample,superkingdom)%>%
+  dplyr::summarise(TPM_mean = sum(TPM))%>%
+  ungroup()%>%
+  ggplot( aes(x= as.factor(sample),y= TPM_mean, fill= as.factor(superkingdom))) +
+   geom_bar(position="fill",stat="identity")+
+  scale_fill_manual(values=c("#ac973e","#8176cc","#5ba966","#c75a93","#cc5f43"))+
+ theme(
+    axis.text.x = element_text(angle = 60, hjust = 1),
+    legend.position="bottom"
+  
+  )+
+  scale_x_discrete(label = function(x) stringr::str_trunc(x, 20))+
+  ggtitle("Kingdom Overview")+
+  facet_wrap(~bay)+
+  coord_flip()
+```
+
+```{r Taxa overview - Barplots}
+
+
+##with Cyanobacteria, top 500 TPM per sample - Phylum Level
+
+KEGG_filtered_bac$sample <- factor(KEGG_filtered_bac$sample, levels = c("F18MayB","F18JunB","F18NovB","F19MarB",
+                                                                        "F18MayD","F18JunD","F18NovD","F19MarD",
+                                                                        "F18MayF","F18JunF","F18NovF","F19MarF",
+                                                                        "F18MayK","F18JunK","F18NovK","F19MarK",
+                                                                        "F18MayL","F18JunL","F18NovL","F19MarL",
+                                                                        "F18MayM","F18JunM","F18NovM","F19MarM"))
+
+KEGG_filtered_bac %>%
+  dplyr::group_by(sample)%>%
+  dplyr::top_n(500, TPM)%>%
+  ungroup() %>%
+  ggplot( aes(x= as.factor(sample),y= TPM, fill= as.factor(phylum))) +
+    geom_bar(position="fill",stat="identity")+
+  scale_fill_manual(values=c("#d74677","#ca766e","#71362a","#d2442f","#d3853a","#c8af99","#d0b93f","#867835","#cdd992","#bdde47","#37442a","#69db4c",
+                             "#65c069","#4f8050","#7ad9be","#7eb8cf","#55677e","#657acd","#7544d0","#4d2c7f","#bc76cd","#39233e","#cb9fc6","#d245c1",
+                             "#8d386a"))+
+ theme(
+    axis.text.x = element_text(angle = 60, hjust = 1),
+    legend.position="bottom"
+  
+  )+
+  scale_x_discrete(label = function(x) stringr::str_trunc(x, 20))+
+  ggtitle("Phylum Bacteria with Cyanobacteria")+
+  facet_wrap(~bay)+
+  coord_flip()
+
+
+### Cyanobacteria on Order Level
+
+KEGG_filtered_bac %>%
+    filter(phylum %in% "Cyanobacteria")%>%
+  group_by(sample,bay,order)%>%
+  dplyr::summarize(TPM=sum(TPM))%>%
+  ungroup()%>%
+ ggplot( aes(x= as.factor(sample),y= TPM, fill= as.factor(order))) +
+   geom_bar(position="fill",stat="identity")+
+  coord_flip()+
+  facet_wrap(~bay, ncol=2)+
+ # scale_x_discrete("bay", labels =TRUE)+
+  scale_fill_manual(values=c("#c65c8a","#4da970","#b05cc6","#83a23e","#7178cb","#c18b40","#4cb0ce","#cc5643"))+
+ theme(
+    axis.text.x = element_text(angle = 60, hjust = 1)
+  
+  )+
+  scale_x_discrete(label = function(x) stringr::str_trunc(x, 20))+
+  ggtitle("Taxa vs TPM")
+
+```
+
+```{r Taxa overview - family level barplots}
+
+####Family by sites,up to 100 % Top 50 TPM per sample
+
+## Filtered Unknown and Cyanobacteria 
+KEGG_filtered_bac %>%
+  filter(!family %in% "xx_Unknown")%>%
+  filter(!phylum %in% "Cyanobacteria")%>%
+  dplyr::group_by(sample)%>%
+  dplyr::top_n(50, TPM)%>%
+  ungroup() %>%
+ ggplot( aes(x= as.factor(sample),y= TPM, fill= as.factor(family))) +
+  geom_bar(position="fill",stat="identity")+
+  coord_flip()+
+  facet_wrap(~bay, ncol=2)+
+  scale_fill_manual(values=c("#ff007c","#bf0055","#4d0010","#ff7277","#ffbeb8","#da5100","#ff9861","#613900","#c68500","#fff5e8","#fff1b8","#685f00",
+                             "#232100","#a8cb00","#5a8800","#b2ff72","#004009","#c5ffcd","#00d369","#00854b","#3bffb6","#02ceb2","#01e3f1","#007782",
+                             "#0095ac","#003743","#b1e7ff","#0084b2","#81cdff","#002a4d","#0063ae","#002386","#8b7bff","#1c0045","#d08cff","#9d30e3",
+                             "#9b0086","#ff5fb8","#6a0039","blue","red","green","yellow"))+
+ theme(
+    axis.text.x = element_text(angle = 60, hjust = 1)
+  
+  )+
+  scale_x_discrete(label = function(x) stringr::str_trunc(x, 20))+
+  ggtitle("Taxa vs TPM")
+
+### Differential expressed genes assigned on family level - barplot 
+
+diff_expre_TPM <- diffexpr %>% 
+  left_join(KEGG_filtered, by=c("ID","phylum","superkingdom","class","order","family","genus","species"))%>%
+  filter(superkingdom %in% "Bacteria")%>%
+  replace_na(list(bay="Unknown"))%>%
+  filter(!bay %in% "Unknown")%>%
+  mutate_if(is.character, list(~na_if(.,"no_support")))%>%
+  replace_na(list(family="xx_Unclassified"))%>%
+  replace_na(list(gene="Unknown"))
+
+
+diff_expre_TPM  %>%
+  filter(!phylum %in% "Cyanobacteria")%>%
+  filter(!family %in% "xx_Unclassified")%>%
+  dplyr::group_by(sample)%>%
+  dplyr::top_n(100, TPM)%>%
+  ungroup() %>%
+ ggplot( aes(x= as.factor(sample),y= TPM, fill= as.factor(family))) +
+      geom_bar(position="fill",stat="identity")+
+  coord_flip()+
+  scale_fill_manual(values=c("#648600","#6453ff","#94f211","#af59ff","#01da87","#e200bc","#007617","#ff169a","#5affca","#fb0055","#009d6e","#7b0082",
+                             "#bcffa9","#3f0065","#ffee8c","#030032","#ff501c","#1994ff","#ff9336","#00479f","#ffbf64","#0163ae","#8e7f00","#fca8ff",
+                             "#194a00","#c9acff","#956300","#0098dc","#741100","#9fffd3","#3f0031","#a8fffc","#2f0700","#cef2ff","#001818","#ffcce1",
+                             "#333a00","#ccc6ff","#402100","#02b3dd","#ff9f99","#00573b","#ff9ac5","#03bfc9"))+
+ theme(
+    axis.text.x = element_text(angle = 60, hjust = 1),
+    legend.position="bottom"
+  
+  )+
+  scale_x_discrete(label = function(x) stringr::str_trunc(x, 20))+
+  ggtitle("Filter for Significant differential expressed genes family annotation")+
+  facet_wrap(~bay)
+
+```
+
+```{r boxplot - family level}
+part1 <- KEGG_filtered_bac %>%
+  filter(!TPM > 700)%>%
+  filter(!phylum %in% "Cyanobacteria")%>%
+  filter(!family%in%"xx_Unknown")%>%
+  dplyr::group_by(bay)%>%
+  dplyr::top_n(200, TPM)%>%
+  ungroup() %>%
+  ggplot(aes(x = bay, y = TPM)) +
+  geom_boxplot(color="black", fill="grey76") +
+  geom_jitter(aes( colour = family, size=2))+
+  coord_flip()+
+  theme(
+    legend.position = 'bottom'
+  )+
+scale_color_manual(values=c("#41285d","#73d74f","#9d43d9","#cfd84c","#5947b4","#7adea2","#cc42ae","#4c924a","#c684d0","#d4973a","#6984c0","#d44c31",
+                            "#72bcc1","#d44e75","#858736","#853a62","#cbcc9b","#3b383f","#c37f63","#485c3d","#c5a6ba","#733526"))+
+  guides(size=guide_legend(order=2),
+         shape= guide_legend(override.aes=list(size=2),
+        colour=guide_legend(override.aes=list(size=4))))
+
+
+part2 <- KEGG_filtered_bac %>%
+  filter(!TPM < 700)%>%
+  filter(!phylum %in% "Cyanobacteria")%>%
+  filter(!family%in%"xx_Unknown")%>%
+  dplyr::group_by(bay)%>%
+  dplyr::top_n(200, TPM)%>%
+  ungroup() %>%
+  ggplot(aes(x = bay, y = TPM)) +
+  geom_boxplot(color="black", fill="grey76") +
+  geom_jitter(aes( colour = family, size=2))+
+  coord_flip()+
+  theme(
+    legend.position = 'bottom'
+  )+
+scale_color_manual(values=c("#41285d","#73d74f","#9d43d9","#cfd84c","#5947b4","#7adea2","#cc42ae","#4c924a","#c684d0","#d4973a","#6984c0","#d44c31",
+                            "#72bcc1","#d44e75","#858736","#853a62","#cbcc9b","#3b383f","#c37f63","#485c3d","#c5a6ba","#733526"))+
+  guides(size=guide_legend(order=2),
+         shape= guide_legend(override.aes=list(size=2),
+        colour=guide_legend(override.aes=list(size=4))))
+
+
+
+ggarrange(part1,part2, ncol=2)
+```
+
+
+```{r Baloonplot on differential expressed genes assigned to family level}
+
+
+####Balloon plot with Family based on TPMs of MetaT data 
+
+baloon_meta <- diff_expre_TPM%>%
+  filter(!family %in% "xx_Unclassified")%>%
+  filter(!phylum %in% "Cyanobacteria")%>%
+  dplyr::group_by(sample)%>%
+  dplyr::top_n(100, TPM)%>%
+  ungroup()%>%
+  filter(!family %in% c("Thiobacillaceae","Cryomorphaceae","Thiotrichaceae"))
+
+
+baloon_meta <- baloon_meta %>% mutate(row=group_indices_(baloon_meta, .dots=c("family")))
+baloon_meta <- baloon_meta %>% mutate(col= group_indices_(baloon_meta, .dots=c("bay", "month")))
+baloon_meta <- baloon_meta %>% arrange(col)
+# get character vector of variable names for the x axis. the order is important, hence arrange(col)!
+vars_x_axis <- c(baloon_meta %>% arrange(col) %>% dplyr::select(bay, month) %>% distinct())$bay
+# get character vector of observation names for the y axis. again, the order is important but "df" is already ordered
+baloon_meta <- baloon_meta %>% arrange(row)
+names_y_axis <- c(baloon_meta %>% group_by(row) %>% distinct(family) %>% ungroup() %>% dplyr::select(family))$family
+
+
+#Plot
+ggplot(baloon_meta, aes(x=factor(col), y=factor(row), color=month, size=TPM, alpha=TPM)) +
+  geom_point() +    # plot as points
+  #geom_text(aes(label=relab, x=col + 0.25), alpha=1.0, size=3) +   # display the value next to the "balloons"
+  scale_alpha_continuous(range=c(0.6, 0.9)) +
+  scale_size_area(max_size = 7) +
+  scale_x_discrete(breaks=1:length(vars_x_axis), labels=vars_x_axis, position='top') +   # set the labels on the X axis
+  scale_y_discrete(breaks=1:length(names_y_axis), labels=names_y_axis) +                 # set the labels on the Y axis
+  theme_bw() +
+  theme(axis.line = element_blank(),            # disable axis lines
+        axis.title = element_blank(),           # disable axis titles
+        panel.border = element_blank(),         # disable panel border
+        panel.grid.major.x = element_blank(),   # disable lines in grid on X-axis
+        panel.grid.minor.x = element_blank()) + # disable lines in grid on X-axis
+  scale_color_manual(values=c( "black","black","black","black"))
+```
+
+```{r Volcano plot}
+
+
+known_diff_expr$expression = ifelse(known_diff_expr$padj < 0.05 & abs(known_diff_expr$log2FoldChange) >= 1, 
+                     ifelse(known_diff_expr$log2FoldChange> 1 ,'Heated Bay','Control Bay'),
+                     'Stable')
+
+
+###Color specific regions 
+## plot using ggplot2
+
+
+
+p <- ggplot(known_diff_expr,aes(x = log2FoldChange, y = -log10(padj), shape=expression)) +
+  geom_point()
+
+
+p<-p+  geom_point(data=subset(known_diff_expr, !between(log2FoldChange, -1, 1) | padj > 0.05), aes(color=factor(groups), label=gene, size=4)) +
+       scale_color_manual(values=c("#01ad57","#ff8f2c","#a2008b","#016fb0","#ffa3f1","#5a5408","darkgrey"))+
+      ggtitle("Differential expression") +
+      xlab("log2 fold change") + 
+      ylab("-log10 adjusted p-value") +
+  theme(
+        plot.title = element_text(size = rel(1.5), hjust = 0.5),
+        axis.title = element_text(size = rel(1.25))) 
+
+p
+####Without Others
+
+
+known_diff_expr_w_o$expression = ifelse(known_diff_expr_w_o$padj < 0.05 & abs(known_diff_expr_w_o$log2FoldChange) >= 1, 
+                     ifelse(known_diff_expr_w_o$log2FoldChange> 1 ,'Heated Bay','Control Bay'),
+                     'Stable')
+
+p <- ggplot(known_diff_expr_w_o,aes(x = log2FoldChange, y = -log10(padj), shape=expression)) +
+  geom_point()
+
+
+p+  geom_point(data=subset(known_diff_expr_w_o, !between(log2FoldChange, -1, 1) | padj > 0.05), aes(color=factor(groups), label=gene, size=4)) +
+    scale_color_manual(values=c("#01ad57","#ff8f2c","#a2008b","#016fb0","#ffa3f1","#5a5408","darkgrey"))+
+    ggtitle("Differential expression") +
+    xlab("log2 fold change") + 
+    ylab("-log10 adjusted p-value") +
+    theme(
+        plot.title = element_text(size = rel(1.5), hjust = 0.5),
+        axis.title = element_text(size = rel(1.25))) 
+```
+
+
+```{r  LFC 5 - differential expressed genes }
+
+##Filter genes of interest
+spec_high <- known_high %>%
+  filter(gene %in% c("atpH","atpG","atpF","atpE","atpC","atpA","qrcD","qrcC","qrcB","pmoA1","fccA",
+                     "fccB","dsvA","dsvB","aprA","aprB","fdhA","fdhB","cooS","ascA","acsC","hspA",
+                     "dnaK","groS","ibpA","hup","rpoA","hupB","recA","psaE","psaD","psbV","psaL","psaE"))
+ 
+spec_high$gene <- factor(spec_high$gene,
+                          levels = c("pmoA1","fccA","fccB","dsvA","dsvB","aprA","aprB","qrcD","qrcC",
+                                     "qrcB","fdhA","fdhB","cooS","ascA","acsC","atpH","atpG","atpF",
+                                     "atpE","atpC","atpA","psaD","psbV","psaL","psaE","hspA","dnaK",
+                                     "groS","ibpA","hup","rpoA","hupB","recA"))
+                                    
+
+
+spec_high %>%
+  ggplot(aes(x=gene, y=log2FoldChange)) +
+  geom_point(stat='identity', aes(col=groups), size=6)  +
+  scale_color_manual(values = c("#01ad57","#ff8f2c","#a2008b","#016fb0","#ffa3f1","#5a5408")) + 
+  coord_flip()+
+  scale_x_discrete(limits = rev(levels(spec_high$gene)))+
+  geom_hline(yintercept = 0, linetype="dashed", 
+                color = "black", size=0.5)+
+  theme_classic()+
+   annotate("text", x=2, y=-3, label= "Control bay") + 
+  annotate("text", x =2, y=3, label = "Heated bay")+
+  theme(legend.position="bottom")
+
+```
+
+```{r Metabolism on Significant differential expressed genes over 5 LFC -5 LFC}
+
+## Filter genes of interest
+spec_high <- known_high %>%
+  filter(gene %in% c("atpH","atpG","atpF","atpE","atpC","atpA","qrcD","qrcC","qrcB","pmoA1",
+                     "fccA","fccB","dsvA","dsvB","aprA","aprB","fdhA","fdhB","cooS","ascA",
+                     "acsC","hspA","dnaK","groS","ibpA","hup","rpoA","hupB","recA","psaE",
+                     "psaD","psbV","psaL","psaE"))
+ 
+spec_high$gene <- factor(spec_high$gene,
+                          levels = c("pmoA1","fccA","fccB","dsvA","dsvB","aprA","aprB","qrcD",
+                                     "qrcC","qrcB","fdhA","fdhB","cooS","ascA","acsC","atpH",
+                                     "atpG","atpF","atpE","atpC","atpA","psaD","psbV","psaL",
+                                     "psaE","hspA","dnaK","groS","ibpA","hup","rpoA","hupB","recA"))
+
+spec_high$month <- factor(spec_high$month,
+                          levels = c("may","june","november","march"))
+                                    
+###Stress 
+##Heated bay
+temp <- spec_high %>%
+  mutate_if(is.character, list(~na_if(.,"no_support")))%>%
+  replace_na(list(family="xx_Unclassified"))%>%
+  replace_na(list(phylum="xx_Unclassified"))%>%
+  replace_na(list(order="xx_Unclassified"))%>%
+  replace_na(list(gene="Unknown"))%>%
+  filter(groups %in% "e_Chaperones")%>%
+  filter(bay %in% "TEMP_AFFECT")%>%
+ggplot( aes(x= as.factor(month),y= TPM, fill= order)) +
+  geom_col()+
+  facet_grid(~ gene)+
+  scale_fill_manual(values=c("#83569d","#5eb847","#8f54cb","#b5b63e","#5b6dd9","#69892c",
+                             "#d076df","#61be7d","#c143a4","#3b804f","#e34685","#50bba7",
+                             "#d24040","#4ab4dd","#dd792f","#4b76b8","#d9a65d","#989ae1",
+                             "#986f2b","#d287c1","#7b8143","#ae3b6c","#ae593c","#994d63","#e58389"))+
+ theme(
+    axis.text.x = element_text(angle = 60, hjust = 1),
+    legend.position="bottom"
+  
+  )+
+  scale_x_discrete(label = function(x) stringr::str_trunc(x, 20))
+
+##Control bay
+con <- spec_high %>%
+    mutate_if(is.character, list(~na_if(.,"no_support")))%>%
+  replace_na(list(family="xx_Unclassified"))%>%
+  replace_na(list(phylum="xx_Unclassified"))%>%
+  replace_na(list(order="xx_Unclassified"))%>%
+  replace_na(list(gene="Unknown"))%>%
+  filter(groups %in% "e_Chaperones")%>%
+  filter(bay %in% "CONTROL")%>%
+ # filter(!family %in% "xx_Unclassified")%>%
+ggplot( aes(x= as.factor(month),y= TPM, fill= order)) +
+  geom_col()+
+  facet_grid(~ gene)+
+ # scale_x_discrete("gene", labels =TRUE)+
+  scale_fill_manual(values=c("#83569d","#5eb847","#8f54cb","#b5b63e","#5b6dd9","#69892c","#d076df","#61be7d","#c143a4","#3b804f","#e34685","#50bba7",
+                             "#d24040","#4ab4dd","#dd792f","#4b76b8","#d9a65d","#989ae1","#986f2b","#d287c1","#7b8143","#ae3b6c","#ae593c","#994d63","#e58389"))+
+ theme(
+    axis.text.x = element_text(angle = 60, hjust = 1,
+                              ),legend.position="bottom"
+  
+  )+
+  scale_x_discrete(label = function(x) stringr::str_trunc(x, 20))
+
+##Combined bays
+ggarrange(temp, con, ncol=2)
+
+
+###repair and recombination
+##Heated bay                                   
+temp <- spec_high %>%
+    mutate_if(is.character, list(~na_if(.,"no_support")))%>%
+  replace_na(list(family="xx_Unclassified"))%>%
+  replace_na(list(phylum="xx_Unclassified"))%>%
+  replace_na(list(order="xx_Unclassified"))%>%
+  replace_na(list(gene="Unknown"))%>%
+  filter(groups %in% "f_repair and recombination")%>%
+  filter(bay %in% "TEMP_AFFECT")%>%
+  ggplot( aes(x= as.factor(month),y= TPM, fill= order)) +
+  geom_col()+
+  facet_grid(~ gene)+
+  scale_fill_manual(values=c("#83569d","#5eb847","#8f54cb","#b5b63e","#5b6dd9","#69892c",
+                             "#d076df","#61be7d","#c143a4","#3b804f","#e34685","#50bba7",
+                             "#d24040","#4ab4dd","#dd792f","#4b76b8","#d9a65d","#989ae1",
+                             "#986f2b","#d287c1","#7b8143","#ae3b6c","#ae593c","#994d63","#e58389"))+
+ theme(
+    axis.text.x = element_text(angle = 60, hjust = 1),
+    legend.position="bottom"
+  
+  )+
+  scale_x_discrete(label = function(x) stringr::str_trunc(x, 20))
+
+##Control bay
+con <- spec_high %>%
+  mutate_if(is.character, list(~na_if(.,"no_support")))%>%
+  replace_na(list(family="xx_Unclassified"))%>%
+  replace_na(list(phylum="xx_Unclassified"))%>%
+  replace_na(list(order="xx_Unclassified"))%>%
+  replace_na(list(gene="Unknown"))%>%
+  filter(groups %in% "f_repair and recombination")%>%
+  filter(bay %in% "CONTROL")%>%
+ggplot( aes(x= as.factor(month),y= TPM, fill= order)) +
+  geom_col()+
+  facet_grid(~ gene)+
+
+  scale_fill_manual(values=c("#83569d","#5eb847","#8f54cb","#b5b63e","#5b6dd9","#69892c",
+                             "#d076df","#61be7d","#c143a4","#3b804f","#e34685","#50bba7",
+                             "#d24040","#4ab4dd","#dd792f","#4b76b8","#d9a65d","#989ae1",
+                             "#986f2b","#d287c1","#7b8143","#ae3b6c","#ae593c","#994d63","#e58389"))+
+ theme(
+    axis.text.x = element_text(angle = 60, hjust = 1,
+                              ),legend.position="bottom"
+  
+  )+
+  scale_x_discrete(label = function(x) stringr::str_trunc(x, 20))
+
+##Combine bays
+ggarrange(temp, con, ncol=2)
+
+
+###Photosynthesis
+
+##Heated bay
+temp <- spec_high %>%
+    mutate_if(is.character, list(~na_if(.,"no_support")))%>%
+  replace_na(list(family="xx_Unclassified"))%>%
+  replace_na(list(phylum="xx_Unclassified"))%>%
+  replace_na(list(order="xx_Unclassified"))%>%
+  replace_na(list(gene="Unknown"))%>%
+  filter(groups %in% "a_Photosynthesis")%>%
+  filter(bay %in% "TEMP_AFFECT")%>%
+ # filter(!family %in% "xx_Unclassified")%>%
+ggplot( aes(x= as.factor(month),y= TPM, fill= phylum)) +
+  geom_col()+
+  facet_grid(~ gene)+
+ # scale_x_discrete("gene", labels =TRUE)+
+  scale_fill_manual(values=c("#83569d","#5eb847","#8f54cb","#b5b63e","#5b6dd9","#69892c","#d076df","#61be7d","#c143a4","#3b804f","#e34685","#50bba7",
+                             "#d24040","#4ab4dd","#dd792f","#4b76b8","#d9a65d","#989ae1","#986f2b","#d287c1","#7b8143","#ae3b6c","#ae593c","#994d63","#e58389"))+
+ theme(
+    axis.text.x = element_text(angle = 60, hjust = 1),
+    legend.position="bottom"
+  
+  )+
+  scale_x_discrete(label = function(x) stringr::str_trunc(x, 20))
+
+##Control bay
+con <- spec_high %>%
+  mutate_if(is.character, list(~na_if(.,"no_support")))%>%
+  replace_na(list(family="xx_Unclassified"))%>%
+  replace_na(list(phylum="xx_Unclassified"))%>%
+  replace_na(list(order="xx_Unclassified"))%>%
+  replace_na(list(gene="Unknown"))%>%
+  filter(groups %in% "a_Photosynthesis")%>%
+  filter(bay %in% "CONTROL")%>%
+ggplot( aes(x= as.factor(month),y= TPM, fill= phylum)) +
+  geom_col()+
+  facet_grid(~ gene)+
+  scale_fill_manual(values=c("#83569d","#5eb847","#8f54cb","#b5b63e","#5b6dd9","#69892c",
+                             "#d076df","#61be7d","#c143a4","#3b804f","#e34685","#50bba7",
+                             "#d24040","#4ab4dd","#dd792f","#4b76b8","#d9a65d","#989ae1",
+                             "#986f2b","#d287c1","#7b8143","#ae3b6c","#ae593c","#994d63","#e58389"))+
+ theme(
+    axis.text.x = element_text(angle = 60, hjust = 1,
+                              ),legend.position="bottom"
+  
+  )+
+  scale_x_discrete(label = function(x) stringr::str_trunc(x, 20))
+
+##Combine bays
+ggarrange(temp, con, ncol=2)
+
+```
+
+
+```{r session-info}
+# Display current R session information
+sessionInfo()
+```

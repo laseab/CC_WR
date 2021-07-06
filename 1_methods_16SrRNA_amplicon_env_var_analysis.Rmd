@@ -1,0 +1,1646 @@
+---
+title: "16S rRNA gene amplicon and environmental variables analysis"
+author: "Laura Seidel"
+date: "6/10/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libraries}
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(vegan))
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(phyloseq))
+suppressPackageStartupMessages(library(gplots))
+suppressPackageStartupMessages(library(corrplot))
+suppressPackageStartupMessages(library(adespatial))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(ggpubr))
+suppressPackageStartupMessages(library(tidyr))
+suppressPackageStartupMessages(library(ggtree))
+suppressPackageStartupMessages(library(DESeq2))
+suppressPackageStartupMessages(library(apeglm))
+suppressPackageStartupMessages(library(zinbwave)) 
+suppressPackageStartupMessages(library(scran))
+suppressPackageStartupMessages(library(cowplot))
+suppressPackageStartupMessages(library(VennDiagram))
+suppressPackageStartupMessages(library(pscl))
+suppressPackageStartupMessages(library(MASS))
+suppressPackageStartupMessages(library(ggstatsplot))
+suppressPackageStartupMessages(library(ggfortify))
+suppressPackageStartupMessages(library(emmeans))
+suppressPackageStartupMessages(library(SRS))
+suppressPackageStartupMessages(library(zCompositions))
+suppressPackageStartupMessages(library(CoDaSeq))
+```
+
+```{r load tables}
+#TAXA
+taxa <- read.csv("../../../../16S/SED/seqid_taxa_table.csv", stringsAsFactors = FALSE) %>%
+        replace_na(list(Phylum="Unclassified"))%>%
+        replace_na(list(Class="Unclassified"))%>%
+        replace_na(list(Order="Unclassified"))%>%
+        replace_na(list(Family="Unclassified"))%>%
+        replace_na(list(Genus="Unclassified"))%>%
+        replace_na(list(Species="Unclassified")) %>%
+        filter(Phylum != "p__Cyanobacteriota")
+#Analysis without cyanos, are mainly unclassified on family level, but significant higher in warm bay compared to control
+
+#meta table, once with names as row names and once not
+meta <- read.csv("../../../../16S/SED/asvs_taxa_meta/meta.csv", stringsAsFactors = FALSE)
+meta <- meta %>%  
+        column_to_rownames(var="sample")
+meta<- meta[ order(rownames(meta)) , ,drop=F]
+meta <- meta %>%
+        dplyr::select(-temp_sed)%>%
+        na.omit()%>%
+        rownames_to_column("sample") %>% 
+        column_to_rownames(var="name")
+
+meta1 <- meta %>% rownames_to_column("name")
+
+meta_all <- read.csv("../../../../16S/SED/asvs_taxa_meta/meta.csv", stringsAsFactors = FALSE)
+
+#count table
+#SEDIMENT COUNTS
+asvs <- read.csv("../../../../16S/SED/seqid_ISV_table.csv", stringsAsFactors =FALSE)%>% 
+        gather(sample,count, 2:ncol(.))%>%
+        filter(count > 0)
+
+##Filter out samples which cannot be used in CCA and other comparisons with Env.var due to missing values
+asvs_wo_sam <- read.csv("../../../../16S/SED/seqid_ISV_table.csv", stringsAsFactors = )%>% 
+    gather(sample,count, 2:ncol(.))%>%
+    filter(count > 0)%>% 
+    filter(sample != c('X1081')) %>%
+    filter(sample != c('X1085')) %>%
+    filter(sample != c('X1010')) %>%
+    filter(sample != c('X1011')) %>%
+    filter(sample != c('X1012')) 
+
+###relative abundance and filter everything under 500 counts ####
+
+# Since this chunk overwrites the original table, it's not a very good idea to run pieces of it!!!
+# From here on, we only want to deal with samples that have at least 500 observations/counts
+asvs1<- asvs_wo_sam %>%
+  inner_join(meta_all, by = "sample") %>%
+  inner_join (taxa, by = "ISV") %>%
+  filter(Family != "f__Mitochondria") %>% 
+  filter(Class  != "c__Chloroplast") %>%
+  # Group by sample, to get access to the group wise sum of counts
+  group_by(sample) %>% 
+  # Filter to keep only rows from samples having at least 500 counts
+  filter(sum(count) >= 500) %>% 
+  # Since we have the data grouped, we can calculate the relative abundance here
+  mutate(relab = count/sum(count)) %>%
+  ungroup()
+
+
+asvs2 <-  asvs %>%  
+  inner_join(meta_all, by = "sample") %>%
+  inner_join (taxa, by = "ISV") %>%
+  #filter(Phylum != "p__Cyanobacteriota") %>%
+  filter(Family != "f__Mitochondria") %>% 
+  filter(Class  != "c__Chloroplast") %>%
+  # Group by sample, to get access to the group wise sum of counts
+  group_by(sample) %>% 
+  # Filter to keep only rows from samples having at least 500 counts
+  filter(sum(count) >= 500) %>% 
+  # Since we have the data grouped, we can calculate the relative abundance here
+  mutate(relab = count/sum(count)) %>%
+  ungroup() 
+
+###Cyanobacteria
+taxa_cyanos <- read.csv("../../../../16S/SED/seqid_taxa_table.csv", stringsAsFactors = FALSE) %>%
+        replace_na(list(Phylum="Unclassified"))%>%
+        replace_na(list(Class="Unclassified"))%>%
+        replace_na(list(Order="Unclassified"))%>%
+        replace_na(list(Family="Unclassified"))%>%
+        replace_na(list(Genus="Unclassified"))%>%
+        replace_na(list(Species="Unclassified")) 
+
+
+asvs3 <- asvs %>%  
+  inner_join(meta_all, by = "sample") %>%
+  inner_join (taxa_cyanos, by = "ISV") %>%
+  filter(Family != "f__Mitochondria") %>% 
+  filter(Class  != "c__Chloroplast") %>%
+  group_by(sample) %>% 
+  filter(sum(count) >= 500) %>% 
+  mutate(relab = count/sum(count)) %>%
+  ungroup() 
+
+#Cyanobacteria
+asvs_cyano <- asvs %>%  
+  inner_join(meta_all, by = "sample") %>%
+  inner_join (taxa_cyanos, by = "ISV") %>%
+  filter(Family != "f__Mitochondria") %>% 
+  filter(Class  != "c__Chloroplast") %>%
+  group_by(sample) %>% 
+  filter(sum(count) >= 500) %>% 
+  mutate(relab = count/sum(count)) %>%
+  ungroup()%>%
+  filter(Phylum %in% "p__Cyanobacteriota")
+
+###Wide tables
+
+##Matrix wide table with counts
+asvswidecounts <- asvs2 %>% 
+  dplyr::select(ISV,sample, count) %>% #select ISV, sample and relab
+  spread(ISV,count, fill= 0) %>% #wide format with sequence and relab, filling gaps with 0
+  remove_rownames() %>% #remove of row names
+  column_to_rownames(var = "sample")
+
+asvswide_all <- asvs2 %>% 
+  dplyr::select(ISV,sample, relab) %>% 
+  spread(ISV,relab, fill= 0) %>% 
+  remove_rownames() %>% 
+  column_to_rownames(var = "sample")
+
+##wide format with relab abundance
+asvswide <- asvs1 %>% 
+  dplyr::select(ISV,sample, relab) %>% 
+  spread(ISV,relab, fill= 0) %>% 
+  remove_rownames() %>% 
+  column_to_rownames(var = "sample")
+
+asvswidecount_filtered <- asvs1 %>% 
+  dplyr::select(ISV,sample, count) %>% 
+  spread(ISV,count, fill= 0) %>%
+  remove_rownames() %>% 
+  column_to_rownames(var = "sample")
+
+#SEDIMENT SEQUENCE and ISV
+seq2seqid <- read.csv("../../../../16S/SED/seq2seqid.csv")
+
+```
+
+```{r Chemistry Data preparation}
+
+meta_sub <- meta %>% 
+  dplyr::select(Irontot, pH,  Phosphate, sulfate, "NO3._PW", "NO2._PW", IronII, temperature_bottom, oxygen1_bottom,OM, depth, salinity_bottom)
+
+meta_sub$temperature_bottom <- as.numeric(as.character(meta_sub$temperature_bottom))
+meta_sub$NO2._PW <- as.numeric(as.character(meta_sub$"NO2._PW"))
+meta_sub$NO3._PW <- as.numeric(as.character(meta_sub$"NO3._PW"))
+meta_sub$pH <- as.numeric(as.character(meta_sub$pH))
+meta_sub$Phosphate <- as.numeric(as.character(meta_sub$Phosphate))
+meta_sub$sulfate <- as.numeric(as.character(meta_sub$sulfate))
+meta_sub$oxygen1_bottom <- as.numeric(as.character(meta_sub$oxygen1_bottom))
+meta_sub$depth <- as.numeric(as.character(meta_sub$depth))
+```
+
+
+
+```{r temperature graph - tracking temperature within bays}
+
+temp <- read.csv("../../../../temp.csv")# read in table with data
+
+temp <- temp %>% 
+        dplyr::mutate(number=1:n())# include another column with numbers, because date column is not unique 
+
+plot1 <- ggplot(data=temp, aes(x=number))+
+                geom_errorbar(aes(ymin=TEMP_AFFECT-std_dev_affected, ymax=TEMP_AFFECT+std_dev_affected), colour="gray76", alpha=0.1)+
+                geom_line(aes( y=TEMP_AFFECT), color="orange", size=3 ) +
+               
+                ylab("°C")+
+                xlab("Date")
+                
+ plot1 <- plot1 +geom_errorbar(aes(ymin=CONTROL-std_dev_control, ymax=CONTROL+std_dev_control), colour="gray76", alpha=0.1)+
+                 geom_line( aes( y=CONTROL), color="blue", size=1.5 ) +
+                 geom_point(aes(x=number, y=temp_bot), size=4, color="black", shape=17)+
+                  geom_point(aes(x=number, y=con_bot), size=4, color="black",shape=19)+
+                 geom_point(aes(x=number, y=temp_surf), size=4, color="azure4",shape=17)+
+                  geom_point(aes(x=number, y=con_surf), size=4, color="azure4",shape=19)+
+     theme_bw() +
+  theme(text = element_text(size = 14)) +
+  theme(panel.grid = element_blank(), axis.title.x = element_text(size = 12))
+                
+
+plot1
+
+                
+                
+plot1
+
+
+Df <- temp %>% 
+      mutate(c = TEMP_AFFECT - CONTROL)
+
+##Statistics
+temp_meta<- read.csv("../../16S/SED/asvs_taxa_meta/temperature_surf_bot.csv")
+tempwarm <- temp_meta %>%
+            filter(bay %in% "TEMP_AFFECT")
+tempcon<- temp_meta %>%
+            filter(bay %in% "CONTROL")
+
+B10 <- lm(temperature ~   surf_bot + month + samplingsite , data=tempwarm,  method="REML")##Best fit
+B11 <- lm(temperature ~   surf_bot + month + samplingsite , data=tempcon,  method="REML")
+##F-statistic numerator for degrees of freedom
+summary(B10)$fstatistic
+summary(B11)$fstatistic
+
+anova(B11)
+anova(B10)
+
+```
+
+```{r Create supplemental table for counts and taxonomy}
+asvswide_all_count <- asvs2 %>% 
+  dplyr::select(ISV,sample, count) %>%
+  spread(ISV,count, fill= 0) %>% 
+  remove_rownames() %>% 
+  column_to_rownames(var = "sample")
+
+trans_asv <- asvswide_all_count %>% t()
+trans_asv <- as.data.frame(trans_asv)
+trans_asv <- trans_asv %>%rownames_to_column("ISV")
+trans_asv <- trans_asv %>% left_join(taxa, by="ISV")
+trans_asv <- trans_asv %>% left_join(seq2seqid, by="ISV")
+
+#write.csv(trans_asv, "16S_Taxa_overview_paper_smallTS.csv")
+```
+
+
+```{r Check for singletons and doubletons in the dataset}
+#####Check for Single and doubltons in the dataframe 
+
+###7736 ASVs are in at least 3 samples
+###12604 ASVs are single or doubletons which makes 61 % of ASVS (20340 ASVs)
+trans_asv_filtered <- trans_asv
+
+trans_asv_filtered <- trans_asv_filtered %>% 
+                      dplyr::select(-Kingdom,-Phylum,-Class,-Order,-Family,-Genus,-Species)%>%
+                      remove_rownames()%>%
+                      column_to_rownames(var="ISV")
+
+##Remove singletons and doubltons withni count data
+data_cleaned = trans_asv_filtered[rowSums(trans_asv_filtered>0)>2,,drop=FALSE]
+
+data_single_double = trans_asv_filtered[!rowSums(trans_asv_filtered>0)>2,,drop=FALSE]
+```
+
+```{r barplots + boxplots}
+#Barplot  sampling sites compared on chosen level
+ asvs3 %>%
+  dplyr::group_by(sample)%>% 
+  dplyr::top_n(50, relab)%>%
+  ungroup() %>%
+ggplot(aes(x = sample, y = relab, fill = Phylum)) +
+geom_bar(position="fill", stat="identity") +
+coord_flip() +
+scale_fill_manual(values=c("#deff6f","#012492","#a6a900","#ff5fe1","#009d2f","#e9008b","#01dbbb","#f00068","#01e7fc","#f85300","#0072e3","#ffa62e","#2b99ff","#568f00","#480061","#c2ffa0","#050033","#ffe48a","#003057","#ff5b4a","#02b1ef","#bd7b00","#ad99ff","#978600","#ff9df6","#018a4a","#b50054","#01a17a","#ad0028","#00ada7","#60000a","#bbffd6","#710047","#88ddff","#9d4c00","#0064a7","#ff965f","#017299","#ffa875","#004336","#ffa8c7","#114300","#f2d3ff","#2e0008","#fff4ff","#381900","#93c1ff","#5d4800","#006c6c","#ffb898"))+
+theme(
+    legend.position = 'bottom'
+  )+
+  xlab('bay') + ylab('relative abundance ') +
+  theme(
+    axis.text.x = element_text(angle = 60, hjust = 1)
+  )+
+  facet_wrap(~bay)
+ 
+
+
+#Boxplot 
+
+asvs2 %>%
+  filter(!Family%in%"Unclassified")%>%
+  dplyr::group_by(Family, bay, samplingsite,sample, ISV) %>%
+  dplyr::summarise(relab = mean(relab)) %>%
+  # Take the sum over family, bay and samplingsite
+  dplyr::summarise(relab = sum(relab)) %>%
+  ungroup() %>%
+  dplyr::filter(relab >= 0.05) %>%
+  ggplot(aes(x = bay, y = relab)) +
+  geom_boxplot(color="black", fill="grey76") +
+  geom_jitter(aes( colour = Family, size=2))+
+  coord_flip()+
+  theme(
+    legend.position = 'bottom'
+  )+
+scale_color_manual(values=c("#009E73", "#E69F00","darkmagenta","#BB9D00","black","#0072B2", "#F0E442","#57606c","#CC79A7",
+                            "#FC717F","darkgreen","#56B4E9","plum1","navy","pink2","red",
+                            "antiquewhite4","darkorange3","magenta","orange","lightblue","plum4",
+                            "yellow2","darkred","darkgoldenrod","grey2","dodgerblue","pink","green",
+                            "palevioletred2","mintcream","chartreuse3","peachpuff","#c8d0d9","yellowgreen"))+
+  guides(size=guide_legend(order=2),
+         shape= guide_legend(override.aes=list(size=2),
+        colour=guide_legend(override.aes=list(size=4))))
+```
+
+```{r rarefaction curve of 16S rRNA amplicon data}
+
+asvswidecounts <- asvs2 %>% 
+  dplyr::select(ISV,sample, count) %>% #select ISV, sample and relab
+  spread(ISV,count, fill= 0) %>% #wide format with sequence and relab, filling gaps with 0
+  remove_rownames() %>% #remove of row names
+  column_to_rownames(var = "sample")
+
+
+(raremax <- min(rowSums(asvswidecounts)))
+
+
+out <-  rarecurve(asvswidecounts, step = 20, sample = raremax, col = "green", cex = 0.6)
+
+```
+
+```{r Alpha Diversity Function - SRS - Preparation }
+##raw counts from  material  SED
+example_input_data <- asvs%>%  
+  dplyr::select(ISV, sample, count)%>%  
+  spread(sample,count, fill= 0) %>% 
+  remove_rownames() %>% 
+  column_to_rownames(var = "ISV")
+
+#(e.g. species counts of the library with the lowest sequencing depth):
+Cmin <- min(colSums(example_input_data))
+Cmin
+
+```
+
+
+```{r Alpha diversity based on SRS}
+
+#---------------running the SRS function on example data####
+SRS_output <- SRS(data = example_input_data, Cmin = Cmin)
+SRS_output
+
+
+###Diversity Index Shannon
+###SED
+SRSshannon<- SRS_output %>%
+  t()%>%
+  data.frame()%>%
+  rownames_to_column(var="sample")%>%
+  plyr::ddply(~sample, function(x) {vegan::diversity(x[-1], index="shannon")}) %>%
+  dplyr::rename(shannon= V1) %>% #Shannon 
+  left_join(meta_all, by="sample")
+
+shanSRS <- SRSshannon %>%
+  ggplot(aes(x = bay, y = shannon)) + 
+  geom_boxplot(col=c("blue","orange","blue","orange","blue","orange","blue","orange")) +
+  labs(x = "", y = "Shannon Index") +
+  theme_bw() +
+  theme(text = element_text(size = 14)) +
+  theme(panel.grid = element_blank(), axis.title.x = element_text(size = 12))+
+  facet_wrap(~month)
+shanSRS
+
+
+
+###Evenness
+B <- SRS_output %>%
+              t()%>%
+              data.frame()%>% 
+              rownames_to_column(var="sample")%>%
+              remove_rownames()%>%
+              column_to_rownames(var="sample")
+H <- SRS_output %>%
+              t()%>%
+              data.frame()%>% 
+              rownames_to_column(var="sample")%>% 
+              plyr::ddply(~sample, function(x) {vegan::diversity(x[-1], index="shannon")}) %>%
+              dplyr::rename(shannon= V1)
+H <- H %>% 
+    remove_rownames()%>% 
+    column_to_rownames(var="sample")
+J <- H/log(specnumber(B))
+evenSH <- J %>% 
+  rownames_to_column(var="sample")%>%
+  left_join(meta_all, by="sample")
+
+ggshaneven<- evenSH %>%
+  ggplot(aes(x = bay, y = shannon)) + 
+  geom_boxplot(col=c("blue","orange","blue","orange","blue","orange","blue","orange")) +
+  labs(x = "", y = "Shannon evenness") +
+  theme_bw() +
+ # coord_flip() +
+  theme(text = element_text(size = 14)) +
+  theme(panel.grid = element_blank(), axis.title.x = element_text(size = 12))+
+  facet_wrap(~month)
+ggshaneven
+
+
+
+figure <- ggarrange(shanSRS, ggshaneven, ncol=2, nrow=1)
+figure
+
+
+######Calculate the mean of diversity indices 
+
+
+meta_season <- evenSH %>% 
+              group_by(month, bay)%>% 
+              dplyr::summarize(sd.seso.temp= sd(shannon, na.rm=TRUE)) %>% 
+              ungroup() %>% 
+              arrange(bay)
+
+meta_bay <- evenSH%>% 
+            group_by(bay,month)%>% 
+            dplyr::summarize(mean.bay.temp= mean(shannon, na.rm=TRUE)) %>% 
+            ungroup()
+
+meta.all <- meta_season %>% 
+            merge(meta_bay, by=c("bay","month"))
+
+
+
+###Statistical approach - Alpha diversity
+##Linear regression 
+##Example with Shannon´s H Diversity Index
+B10 <- lm(shannon ~   bay * month + samplingsite/replicate , data=SRSshannon,  method="REML")
+##F-statistic numerator for degrees of freedom
+summary(B10)$fstatistic
+#summary(B8)
+anova(B10)
+
+plot(B10)
+E <- resid(B10)
+hist(E)
+
+##pairwise comparison between bays at each month
+
+emmeans(B10, spec="bay",by="month", contr="pairwise")
+
+```
+
+
+
+```{r PerMANOVA compare bays}
+##Differences of microbial communities based on bay
+BC.dist=vegdist(asvswide_all, distance="bray")
+
+adonis(BC.dist ~bay*month, strata= meta_all$samplingsite, data=meta_all, permutations=999)
+```
+
+```{r CCA }
+#CCA 
+cca <- cca(asvswide ~  Irontot+pH+Phosphate+sulfate+NO3._PW+NO2._PW+IronII+temperature_bottom+oxygen1_bottom+OM+salinity_bottom+depth, meta_sub, scale=TRUE)
+summary(cca)
+
+##Check significance of env.var. within each bay
+ctrl <- how(nperm=999, blocks=meta_sub$bay)
+set.seed(10)
+anova(cca, by = "margin",model="direct", permutations = ctrl)
+
+
+#####GGPLOT VERSION#######
+#Extract site data first
+scrs <- scores(cca, display=c("sp","wa","lc","bp","cn"))
+df_sites<-data.frame(scrs$sites,t(as.data.frame(strsplit(rownames(scrs$sites),"_"))))
+colnames(df_sites)<-c("CCA1","CCA2","sample")
+
+df_sites <- df_sites %>% inner_join(meta, by="sample")
+
+#Draw sites
+p<-ggplot()
+p<-p+geom_point(data=df_sites,aes(CCA1,CCA2,colour=bay, size=5))+
+  scale_color_manual(values=c( "mediumblue","orange2"))
+
+#Draw biplots
+multiplier <- vegan:::ordiArrowMul(scrs$biplot*0.5)
+
+df_arrows<- scrs$biplot*multiplier
+colnames(df_arrows)<-c("CCA1","CCA2")
+df_arrows=as.data.frame(df_arrows)
+
+p<-p+geom_segment(data=df_arrows, aes(x = 0, y = 0, xend = CCA1, yend = CCA2),
+                 arrow = arrow(length = unit(0.2, "cm")))
+
+p<-p+geom_text(data=as.data.frame(df_arrows*1.5),aes(CCA1, CCA2, label = rownames(df_arrows)))
+p
+
+
+```
+
+```{r VIF for CCA}
+#VIF for CCA
+vif.cca <- vif.cca(cca) 
+vif.cca
+```
+
+
+
+
+
+```{r  Differential abundance analysis based on DESeq2 and z-model}
+#Using Zero-Inflated Negative Binominal MOdel to reduce excess of Zeros in Dataset before using Deseq for Differential ABundance analysis
+
+###Make an phyloseq object with/without Cyanobacteria included (either asvs2/asvs3)
+OTU <- asvs2%>% 
+  group_by(ISV, sample)%>%
+  summarise(count=sum(count))%>%
+  dplyr::select(ISV, sample, count)%>% 
+  spread(sample, count,fill=0 ) %>%
+  column_to_rownames("ISV")
+TAXA <- taxa %>% 
+  semi_join(asvs2, by=c("ISV","Kingdom","Family","Order","Class","Genus","Species"))%>% 
+  remove_rownames()%>%
+  column_to_rownames(var="ISV")
+SAMPLES <- meta %>%
+          remove_rownames() %>% 
+          column_to_rownames(var="sample")
+
+OTU <- as.matrix(OTU)
+TAXA <- as.matrix(TAXA)
+
+  OTU = otu_table(OTU, taxa_are_rows = TRUE)
+  TAX = tax_table(TAXA)
+  samples = sample_data(SAMPLES)
+  
+  carbom <- phyloseq(OTU, TAX, samples)
+  carbom
+
+###Get rid of low abundant Taxa
+species_counts_df <- data.frame(otu_table(carbom))
+(sum(colSums(species_counts_df == 0))) / (nrow(species_counts_df) * ncol(species_counts_df))
+
+###~ 93 % zeros in our matrix, now we are droping taxa not seen in at least 20 % of the samples
+(carbom <- filter_taxa(carbom, function(x) sum(x > 0) > (0.2*length(x)), TRUE))
+##From 9099 Taxa there are only 1844 Taxa left, means 1844 species or ASVs are seen in 20% of the samples. 
+
+
+
+###Assessing zero proportion after filtering
+species_counts_df <- data.frame(otu_table(carbom))
+species_counts_df <- data.frame(t(species_counts_df))
+
+
+dds_zinbwave <- phyloseq_to_deseq2(carbom, ~ bay+month+samplingsite:replicate)
+
+ds_zinbwave <- zinbwave(dds_zinbwave,
+                   X="~ 1",
+                   epsilon = 1e10,
+                   verbose = TRUE,
+                   K = 0,
+                   observationalWeights = TRUE,
+                   BPPARAM = BiocParallel::SerialParam())
+
+
+dds_zinb <- DESeqDataSet(dds_zinbwave, design = ~ bay+month+samplingsite:replicate)
+   dds_zinb$group <- factor(paste0(dds_zinb$bay, dds_zinb$month))
+   design(dds_zinb)<- ~group
+dds_zinb <- estimateSizeFactors(dds_zinb, type="poscounts")
+scr <- computeSumFactors(dds_zinb) 
+
+sizeFactors(dds_zinb) <- sizeFactors(scr)
+
+
+###Fit the model use the LRT 
+dds_zinb <- DESeq(dds_zinb, test="LRT", reduced=~1, sfType="poscounts",
+                  minmu=1e-6, minReplicatesForReplace=Inf, fitType = "local")
+
+plotMA(dds_zinb)
+plotDispEsts(dds_zinb)  
+
+###Make contrast so you can differentiate between the groups you are looking for
+  resultsNames(dds_zinb)
+  MayDE2 <- results(dds_zinb, contrast=c("group","CONTROLMay","TEMP_AFFECTMay")) 
+  JuneDE2 <-results(dds_zinb, contrast=c("group","CONTROLJune","TEMP_AFFECTJune")) 
+  NovemberDE2 <-results(dds_zinb, contrast=c("group","CONTROLNovember","TEMP_AFFECTNovember"))
+  MarchDE2 <-results(dds_zinb, contrast=c("group","CONTROLMarch","TEMP_AFFECTMarch"))
+
+##make it readable   
+   
+  shallDE2_results <- data.frame(MarchDE2)
+      
+      
+  baseMeanPerLvl <- sapply( levels(dds_zinb$group), function(lvl) rowMeans(counts(dds_zinb,normalized=TRUE)[,dds_zinb$group == lvl] ) )
+  shallDE2_results <-merge(shallDE2_results,baseMeanPerLvl, by="row.names")
+  ##Change column number depending on the group you want to look at
+  shallDE2_results<- shallDE2_results[,c(1,2,9,13,3,4,5,6,7)]
+
+  sorted_deepDE2_results <- shallDE2_results[order(-shallDE2_results$baseMean),]
+  colnames(sorted_deepDE2_results)[1] <- "ISV"
+   
+  sorted_taxa <- sorted_deepDE2_results %>% left_join(taxa, by="ISV")
+   
+ # write.csv(sorted_taxa , "Deseq_differential_abundance_March__ASV_level_zero_inflated_count_model_filtered_low_abundance.csv") 
+
+```
+
+```{r Differential abundance analysis}
+##Visulaize the differential abundance analysis from the previous step on different Taxa level
+##Here the example Genus, but can be changed to any level of interest, just change in the code
+##Genus Level##
+###May
+Maydif <- read.csv("Deseq_differential_abundance_May_ASV_level_zero_inflated_count_model_filtered_low_abundance.csv", stringsAsFactors = FALSE)
+
+Mayfilt <- Maydif %>% filter(padj <0.05) %>% 
+               dplyr::select(-CONTROLMay,-TEMP_AFFECTMay)
+Mayrest <- Maydif %>%anti_join(Mayfilt, by="ISV") %>% 
+                mutate(Genus = "xx_not_significant")%>%
+               dplyr::select(-CONTROLMay,-TEMP_AFFECTMay)
+
+
+abundMay<- rbind(Mayfilt,Mayrest)
+
+asvMay <- asvs2 %>% filter(month%in% "May")
+
+Mayfull <- abundMay %>% 
+            left_join(asvMay, by=c("ISV","Kingdom","Phylum","Order","Class","Family","Species"))%>%
+            filter(month%in%"May")#%>%
+            #dplyr::select(-deep2013,-deep2017)
+
+
+###June
+Junedif <- read.csv("Deseq_differential_abundance_June_ASV_level_zero_inflated_count_model_filtered_low_abundance.csv", stringsAsFactors = FALSE)
+
+Junefilt <- Junedif %>% filter(padj <0.05) %>% #filter(!between(log2FoldChange, -5, 5))%>%
+               dplyr::select(-CONTROLJune,-TEMP_AFFECTJune)
+Junerest <- Junedif %>%anti_join(Junefilt, by="ISV") %>% mutate(Genus = "xx_not_significant")%>%
+               dplyr::select(-CONTROLJune,-TEMP_AFFECTJune)
+
+
+abundJune<- rbind(Junefilt,Junerest)
+
+asvJune <- asvs2 %>% filter(month%in% "June")
+
+Junefull <- abundJune %>% 
+            left_join(asvJune, by=c("ISV","Kingdom","Phylum","Order","Class","Family","Species"))%>%
+            filter(month%in%"June")#%>%
+            #dplyr::select(-deep2013,-deep2017)
+
+###November
+Novdif <- read.csv("Deseq_differential_abundance_November_ASV_level_zero_inflated_count_model_filtered_low_abundance.csv", stringsAsFactors = FALSE)
+
+Novfilt <- Novdif %>% filter(padj <0.05) %>% #filter(!between(log2FoldChange, -5, 5))%>%
+               dplyr::select(-CONTROLNovember,-TEMP_AFFECTNovember)
+Novrest <- Novdif %>%anti_join(Novfilt, by="ISV") %>% mutate(Genus = "xx_not_significant")%>%
+               dplyr::select(-CONTROLNovember,-TEMP_AFFECTNovember)
+
+
+abundNov<- rbind(Novfilt,Novrest)
+
+asvNov <- asvs2 %>% filter(month%in% "November")
+
+Novfull <- abundNov %>% 
+            left_join(asvNov, by=c("ISV","Kingdom","Phylum","Order","Class","Family","Species"))%>%
+            filter(month%in%"November")#%>%
+            #dplyr::select(-deep2013,-deep2017)
+
+##March
+Marchdif <- read.csv("Deseq_differential_abundance_March_ASV_level_zero_inflated_count_model_filtered_low_abundance.csv", stringsAsFactors = FALSE)
+
+Marchfilt <- Marchdif %>% filter(padj <0.05) %>% #filter(!between(log2FoldChange, -5, 5))%>%
+               dplyr::select(-CONTROLMarch,-TEMP_AFFECTMarch)
+Marchrest <- Marchdif %>%anti_join(Marchfilt, by="ISV") %>% mutate(Genus = "xx_not_significant")%>%
+               dplyr::select(-CONTROLMarch,-TEMP_AFFECTMarch)
+
+
+abundMarch<- rbind(Marchfilt,Marchrest)
+
+asvMarch <- asvs2 %>% filter(month%in% "March")
+
+Marchfull <- abundMarch %>% 
+            left_join(asvMarch, by=c("ISV","Kingdom","Phylum","Order","Class","Family","Species"))%>%
+            filter(month%in%"March")#%>%
+            #dplyr::select(-deep2013,-deep2017)
+###combined all
+
+abund.all <- rbind(Mayfull, Junefull, Novfull, Marchfull)
+
+
+###rest not significant
+May.not.sig <- Mayrest%>% 
+              left_join(asvMay, by=c("ISV","Kingdom","Phylum","Order","Class","Family","Species"))%>%
+               filter(month%in%"May")
+June.not.sig <- Junerest%>% 
+              left_join(asvJune, by=c("ISV","Kingdom","Phylum","Order","Class","Family","Species"))%>%
+               filter(month%in%"June")
+Nov.not.sig <- Novrest%>% 
+              left_join(asvNov, by=c("ISV","Kingdom","Phylum","Order","Class","Family","Species"))%>%
+               filter(month%in%"November")
+March.not.sig <- Marchrest%>% 
+              left_join(asvMarch, by=c("ISV","Kingdom","Phylum","Order","Class","Family","Species"))%>%
+               filter(month%in%"March")
+
+abund.all.rest <- rbind(May.not.sig, June.not.sig, Nov.not.sig, March.not.sig)
+
+###getting 0.5 % and others
+
+abund.all0.5 <- abund.all%>% filter(relab >0.005)# %>% filter(!between(log2FoldChange, -1, 1))
+abund.allrest <- abund.all %>%anti_join(abund.all0.5, by="ISV") %>% mutate(Genus.x = "xxx_Others")
+
+###combined with others under 0.5 percent and significant over 0.5 percent
+
+abund.all.combined <- rbind(abund.all0.5, abund.allrest)
+
+
+###Want to get all non significant in one group and then others significant <0.5 % together
+
+###signifcant within others group
+sig.others <- abund.allrest %>% anti_join(abund.all.rest, by="ISV")
+##not significant ones within others group
+non.sig.others <- abund.all.rest %>% anti_join(sig.others, by="ISV")%>%mutate(Genus.x ="xx_not_significant")
+
+###combine both tables above with the tables over 0.5% 
+
+all.combined.final <- rbind(abund.all0.5,sig.others,non.sig.others)##final table
+
+
+##using Genus X
+
+abund.all$month<-factor(abund.all$month, levels = c("May","June","November","March"))
+
+all.combined.final  %>%
+ # filter(relab>0.01)%>%
+ # filter(!Genus.x %in%"Unclassified")%>%
+ggplot(aes(x = month, y = relab, fill =Genus.x)) +
+geom_bar( position="fill", stat="identity") +
+coord_flip() +
+  scale_fill_manual(values=c("#f8004b","#00fad5","#5d00b6","#93ff6c","#c751ff","#77c600","#427cff","#fff86b","#000f5b","#ff9b1d","#00a7fd","#cf000f",
+                             "#01e7e3","#d85100","#40ddff","#7c000d","#01b981","#8f007d","#007c0e","#ff8af0","#005808","#d59cff","#b79a00","#003670",
+                             "#ffe98b","#8f0060","#deffaa","#8d003c","#b6ffd5","#470019","#d7fff9","#080003","#ffeec3","#002945","#ffd190","#1d1600",
+                             "#eef0ff","#571900","#a5ccff","#843300","#dcccff","#2a3500","#ff9cdf","#004d33","#ff76b1","#018887","#ff9580","#00718e",
+                             "#907000","#a30045","#02a4b3","#ffd3c7","#00718e","#907000"))+  
+theme(
+    legend.position = 'bottom'
+  )+
+  xlab('bay') + ylab('relative abundance >0.5%') +
+  theme(
+    axis.text.x = element_text(angle = 60, hjust = 1)
+  )+
+  facet_wrap(~bay)+
+  theme(legend.position="bottom")
+
+only.sig <- all.combined.final %>% 
+  filter(!Genus.x %in% c("xx_not_significant","xxx_Others"))
+only.sig$month<-factor(only.sig$month, levels = c("May","June","November","March"))
+only.sig  %>%
+ggplot(aes(x = month, y = relab, fill =Genus.x)) +
+geom_bar( position="fill", stat="identity") +
+coord_flip() +
+  scale_fill_manual(values=c("#f8004b","#00fad5","#5d00b6","#93ff6c","#c751ff","#77c600","#427cff","#fff86b","#000f5b","#ff9b1d","#00a7fd","#cf000f",
+                             "#01e7e3","#d85100","#40ddff","#7c000d","#01b981","#8f007d","#007c0e","#ff8af0","#005808","#d59cff","#b79a00","#003670",
+                             "#ffe98b","#8f0060","#deffaa","#8d003c","#b6ffd5","#470019","#d7fff9","#080003","#ffeec3","#002945","#ffd190","#1d1600",
+                             "#eef0ff","#571900","#a5ccff","#843300","#dcccff","#2a3500","#ff9cdf","#004d33","#ff76b1","#018887","#ff9580","#00718e",
+                             "#907000","#a30045","#006c88","#ffd3c7"))+  
+  
+theme(
+    legend.position = 'bottom'
+  )+
+  xlab('bay') + ylab('relative abundance >0.5%') +
+  theme(
+    axis.text.x = element_text(angle = 60, hjust = 1)
+  )+
+  facet_wrap(~bay)+
+  theme(legend.position="bottom")
+
+
+```
+
+```{r balloon plot}
+###Baloon plot on differential abundant families
+Maydif <- read.csv("differential abundance/Deseq_differential_abundance_May_ASV_level_zero_inflated_count_model_filtered_low_abundance.csv", stringsAsFactors = FALSE)
+
+Mayfilt <- Maydif %>% filter(padj <0.05) %>% #filter(!between(log2FoldChange, -5, 5))%>%
+               dplyr::select(-CONTROLMay,-TEMP_AFFECTMay)
+Mayrest <- Maydif %>%anti_join(Mayfilt, by="ISV") %>% 
+                mutate(Family = "xx_not_significant")%>%
+               dplyr::select(-CONTROLMay,-TEMP_AFFECTMay)
+
+
+abundMay<- rbind(Mayfilt,Mayrest)
+
+asvMay <- asvs2 %>% filter(month%in% "May")
+
+Mayfull <- abundMay %>% 
+            left_join(asvMay, by=c("ISV","Kingdom","Phylum","Order","Class","Genus","Species"))%>%
+            filter(month%in%"May")#%>%
+            #dplyr::select(-deep2013,-deep2017)
+
+
+###June
+Junedif <- read.csv("differential abundance/Deseq_differential_abundance_June_ASV_level_zero_inflated_count_model_filtered_low_abundance.csv", stringsAsFactors = FALSE)
+
+Junefilt <- Junedif %>% filter(padj <0.05) %>% #filter(!between(log2FoldChange, -5, 5))%>%
+               dplyr::select(-CONTROLJune,-TEMP_AFFECTJune)
+Junerest <- Junedif %>%anti_join(Junefilt, by="ISV") %>% mutate(Family = "xx_not_significant")%>%
+               dplyr::select(-CONTROLJune,-TEMP_AFFECTJune)
+
+
+abundJune<- rbind(Junefilt,Junerest)
+
+asvJune <- asvs2 %>% filter(month%in% "June")
+
+Junefull <- abundJune %>% 
+            left_join(asvJune, by=c("ISV","Kingdom","Phylum","Order","Class","Genus","Species"))%>%
+            filter(month%in%"June")#%>%
+            #dplyr::select(-deep2013,-deep2017)
+
+###November
+Novdif <- read.csv("differential abundance/Deseq_differential_abundance_November_ASV_level_zero_inflated_count_model_filtered_low_abundance.csv", stringsAsFactors = FALSE)
+
+Novfilt <- Novdif %>% filter(padj <0.05) %>% #filter(!between(log2FoldChange, -5, 5))%>%
+               dplyr::select(-CONTROLNovember,-TEMP_AFFECTNovember)
+Novrest <- Novdif %>%anti_join(Novfilt, by="ISV") %>% mutate(Family = "xx_not_significant")%>%
+               dplyr::select(-CONTROLNovember,-TEMP_AFFECTNovember)
+
+
+abundNov<- rbind(Novfilt,Novrest)
+
+asvNov <- asvs2 %>% filter(month%in% "November")
+
+Novfull <- abundNov %>% 
+            left_join(asvNov, by=c("ISV","Kingdom","Phylum","Order","Class","Genus","Species"))%>%
+            filter(month%in%"November")#%>%
+            #dplyr::select(-deep2013,-deep2017)
+
+##March
+Marchdif <- read.csv("differential abundance/Deseq_differential_abundance_March_ASV_level_zero_inflated_count_model_filtered_low_abundance.csv", stringsAsFactors = FALSE)
+
+Marchfilt <- Marchdif %>% filter(padj <0.05) %>% #filter(!between(log2FoldChange, -5, 5))%>%
+               dplyr::select(-CONTROLMarch,-TEMP_AFFECTMarch)
+Marchrest <- Marchdif %>%anti_join(Marchfilt, by="ISV") %>% mutate(Family = "xx_not_significant")%>%
+               dplyr::select(-CONTROLMarch,-TEMP_AFFECTMarch)
+
+
+abundMarch<- rbind(Marchfilt,Marchrest)
+
+asvMarch <- asvs2 %>% filter(month%in% "March")
+
+Marchfull <- abundMarch %>% 
+            left_join(asvMarch, by=c("ISV","Kingdom","Phylum","Order","Class","Genus","Species"))%>%
+            filter(month%in%"March")#%>%
+            #dplyr::select(-deep2013,-deep2017)
+###combined all
+
+abund.all <- rbind(Mayfull, Junefull, Novfull, Marchfull)
+
+
+###rest not significant
+May.not.sig <- Mayrest%>% 
+              left_join(asvMay, by=c("ISV","Kingdom","Phylum","Order","Class","Genus","Species"))%>%
+               filter(month%in%"May")
+June.not.sig <- Junerest%>% 
+              left_join(asvJune, by=c("ISV","Kingdom","Phylum","Order","Class","Genus","Species"))%>%
+               filter(month%in%"June")
+Nov.not.sig <- Novrest%>% 
+              left_join(asvNov, by=c("ISV","Kingdom","Phylum","Order","Class","Genus","Species"))%>%
+               filter(month%in%"November")
+March.not.sig <- Marchrest%>% 
+              left_join(asvMarch, by=c("ISV","Kingdom","Phylum","Order","Class","Genus","Species"))%>%
+               filter(month%in%"March")
+
+abund.all.rest <- rbind(May.not.sig, June.not.sig, Nov.not.sig, March.not.sig)
+
+###getting 0.5 % and others
+
+abund.all0.5 <- abund.all%>% filter(relab >0.005) #%>% filter(!between(log2FoldChange, -5, 5))
+abund.allrest <- abund.all %>%anti_join(abund.all0.5, by="ISV") %>% mutate(Family.x = "xxx_Others")
+
+###combined with others under 0.5 percent and significant over 0.5 percent
+
+abund.all.combined <- rbind(abund.all0.5, abund.allrest)
+
+
+###Want to get all non significant in one group and then others significant <0.5 % together
+
+###signifcant within others group
+sig.others <- abund.allrest %>% anti_join(abund.all.rest, by="ISV")
+##not significant ones within others group
+non.sig.others <- abund.all.rest %>% anti_join(sig.others, by="ISV")%>%mutate(Family.x ="xx_not_significant")
+
+###combine both tables above with the tables over 0.5% 
+
+all.combined.final <- rbind(abund.all0.5,sig.others,non.sig.others)##final table
+
+only.sig <- all.combined.final %>% 
+            filter(!Family.x %in% c("xx_not_significant","xxx_Others", "Unclassified"))%>%
+            group_by(Family.x, bay, month, sample)%>%
+            summarise(relab=sum(relab))%>%
+            ungroup()
+
+
+only.sig <- only.sig%>% mutate(row=group_indices_(only.sig, .dots=c("Family.x")))
+only.sig <- only.sig%>% mutate(col= group_indices_(only.sig, .dots=c("bay", "month")))
+only.sig <- only.sig %>% arrange(col)
+# get character vector of variable names for the x axis. the order is important, hence arrange(col)!
+vars_x_axis <- c(only.sig %>% arrange(col) %>% dplyr::select(bay, month) %>% distinct())$bay
+# get character vector of observation names for the y axis. again, the order is important but "df" is already ordered
+only.sig <- only.sig %>% arrange(row)
+names_y_axis <- c(only.sig %>% group_by(row) %>% distinct(Family.x) %>% ungroup() %>% dplyr::select(Family.x))$Family.x
+
+
+#Plot
+ggplot(only.sig, aes(x=factor(col), y=factor(row), color=month, size=relab, alpha=relab)) +
+  geom_point() +    # plot as points
+  #geom_text(aes(label=relab, x=col + 0.25), alpha=1.0, size=3) +   # display the value next to the "balloons"
+  scale_alpha_continuous(range=c(0.6, 0.9)) +
+  scale_size_area(max_size = 7) +
+  scale_x_discrete(breaks=1:length(vars_x_axis), labels=vars_x_axis, position='top') +   # set the labels on the X axis
+  scale_y_discrete(breaks=1:length(names_y_axis), labels=names_y_axis) +                 # set the labels on the Y axis
+  theme_bw() +
+  theme(axis.line = element_blank(),            # disable axis lines
+        axis.title = element_blank(),           # disable axis titles
+        panel.border = element_blank(),         # disable panel border
+        panel.grid.major.x = element_blank(),   # disable lines in grid on X-axis
+        panel.grid.minor.x = element_blank()) + # disable lines in grid on X-axis
+  scale_color_manual(values=c( "black","black","black","black"))
+
+
+###Baloon plot on Cyanobacteria
+
+baloon_meta <- all.combined.final
+
+
+baloon_meta <- baloon_meta %>% mutate(row=group_indices_(baloon_meta, .dots=c("Phylum")))
+baloon_meta <- baloon_meta %>% mutate(col= group_indices_(baloon_meta, .dots=c("bay", "month")))
+baloon_meta <- baloon_meta %>% arrange(col)
+# get character vector of variable names for the x axis. the order is important, hence arrange(col)!
+vars_x_axis <- c(baloon_meta %>% arrange(col) %>% dplyr::select(bay, month) %>% distinct())$bay
+# get character vector of observation names for the y axis. again, the order is important but "df" is already ordered
+baloon_meta <- baloon_meta %>% arrange(row)
+names_y_axis <- c(baloon_meta %>% group_by(row) %>% distinct(Phylum) %>% ungroup() %>% dplyr::select(Phylum))$Phylum
+
+
+#Plot
+ggplot(baloon_meta, aes(x=factor(col), y=factor(row), color=month, size=relab, alpha=relab)) +
+  geom_point() +    # plot as points
+  #geom_text(aes(label=relab, x=col + 0.25), alpha=1.0, size=3) +   # display the value next to the "balloons"
+  scale_alpha_continuous(range=c(0.6, 0.9)) +
+  scale_size_area(max_size = 7) +
+  scale_x_discrete(breaks=1:length(vars_x_axis), labels=vars_x_axis, position='top') +   # set the labels on the X axis
+  scale_y_discrete(breaks=1:length(names_y_axis), labels=names_y_axis) +                 # set the labels on the Y axis
+  theme_bw() +
+  theme(axis.line = element_blank(),            # disable axis lines
+        axis.title = element_blank(),           # disable axis titles
+        panel.border = element_blank(),         # disable panel border
+        panel.grid.major.x = element_blank(),   # disable lines in grid on X-axis
+        panel.grid.minor.x = element_blank(),
+        legend.position="bottom") 
+```
+
+```{r Significant Taxa and Env.var Correlation - Pearson correlation}
+
+####Use Only.sig from the differential abundance significance analysis on family Level
+
+##We have to transform the counts from the ASVs to CLR (centered log-ratio) first
+asvsclr <-only.sig %>%
+  dplyr::select(Family.x,sample, count) %>%
+  group_by(Family.x, sample)%>%
+  summarise(count=sum(count))%>%
+  ungroup()%>%
+  spread(Family.x, count, fill=0)%>%
+  remove_rownames()%>%
+  column_to_rownames(var="sample")%>%
+  t() %>%
+  data.frame() %>% 
+  cmultRepl(method = 'CZM', delta = 0.5, output = 'p-counts') %>%
+  codaSeq.clr(samples.by.row = FALSE) %>%
+  data.frame() %>%
+  tibble::rownames_to_column('Family.x') %>%
+  gather(sample, clr, 2:ncol(.)) %>%
+  left_join(meta, by = c('sample')) %>%
+  replace_na(list(count = 0)) 
+
+##Get the right format, so we have only Families and environmental variables as column and sample as rows left.
+
+Sig.Fam <- asvsclr %>%
+  dplyr::select(Family.x,sample, clr) %>% 
+  spread(Family.x,clr, fill= 0)%>% 
+  left_join(meta, by="sample")%>% 
+  dplyr::select(-year, -month,-samplingdate,-bay, -replicate,  -redox,  -temperature_surface, -salinity_surface)%>% 
+  remove_rownames()%>%
+  column_to_rownames(var="sample")
+
+##Here we can make a plot directly
+set.seed(123)
+ggstatsplot::ggcorrmat(Sig.Fam, p.adjust.method = "BH",type="pearson",ggsignif.args = list(textsize = 2, tip_length = 0.01), color=c("yellow", "darkorchid4", "green") )
+
+##Or we can decide for a table which we then can save as csv
+
+corrstat <- ggstatsplot::ggcorrmat(Sig.Fam, p.adjust.method ="BH",type="pearson", output="dataframe" )
+#write.csv(corrstat, "correlation_Family_Env_Var_stats_clr_transformed.csv")
+```
+
+```{r PCA chemistry}
+
+metasub_pca <- meta %>%
+  dplyr::select( Phosphate, pH,  sulfate, Irontot,IronII,IronIII,NO3._PW,NO2._PW,OM,temperature_bottom,salinity_bottom, oxygen1_bottom,sample )%>% 
+  remove_rownames()%>% 
+  column_to_rownames(var="sample")
+
+#PCA on chemistry data 
+colvec <- c("blue", "yellow","red","green")
+cola <-c("black","darkolivegreen4","darksalmon")
+
+pca_res <- prcomp(metasub_pca, scale. = TRUE)
+autoplot(pca_res)
+autoplot(pca_res, data = meta, colour = "month" ,loadings=TRUE, loadings.label=TRUE, shape="bay", size=10)
+
+```
+
+
+```{r Chemistry overview - Figure 1}
+
+meta.temp <- meta_all %>% dplyr::select(sample, samplingsite, bay, month, temperature_bottom)
+meta.pH <- meta_all %>% dplyr::select(sample, samplingsite, bay, month, pH)
+meta.sulfate <-  meta_all %>% dplyr::select(sample, samplingsite, bay, month, sulfate)
+meta.Irontot <-  meta_all %>% dplyr::select(sample, samplingsite, bay, month, Irontot)
+meta.IronII <-  meta_all %>% dplyr::select(sample, samplingsite, bay, month, IronII)
+meta.NO3._PW <-  meta_all %>% dplyr::select(sample, samplingsite, bay, month, NO3._PW)
+meta.NO2._PW <-  meta_all %>% dplyr::select(sample, samplingsite, bay, month, NO2._PW)
+meta.salinity_bottom <-  meta_all %>% dplyr::select(sample, samplingsite, bay, month, salinity_bottom)
+meta.oxy <-  meta_all %>% dplyr::select(sample, samplingsite, bay, month, oxygen1_bottom)
+meta.phosphate <-  meta_all %>% dplyr::select(sample, samplingsite, bay, month, Phosphate)
+meta.OM <-  meta_all %>% dplyr::select(sample, samplingsite, bay, month, OM)
+meta.sed <- meta_all %>% dplyr::select(sample, samplingsite, bay,temp_sed)
+
+####Temperature####
+
+meta_sites <- meta.temp %>% group_by(samplingsite, bay)%>% 
+      dplyr::summarize(sd.temp.sites= sd(temperature_bottom, na.rm=TRUE)) %>% 
+      ungroup() %>% 
+      dplyr::select(-bay)
+
+meta_season <- meta.temp %>% group_by(month, bay)%>% 
+      dplyr::summarize(sd.seso.temp= sd(temperature_bottom, na.rm=TRUE)) %>% 
+      ungroup() %>% 
+      arrange(bay)
+
+meta_bay <- meta.temp %>% 
+      group_by(bay)%>% 
+      dplyr::summarize(mean.bay.temp= mean(temperature_bottom, na.rm=TRUE)) %>% 
+      ungroup()
+
+meta_bay_sd <- meta.temp %>% 
+      group_by(bay)%>% 
+      dplyr::summarize(sd.bay.temp= sd(temperature_bottom, na.rm=TRUE)) %>% 
+      ungroup()
+
+meta.all <- meta.temp %>% 
+            merge(meta_bay, by="bay") %>% 
+            merge(meta_sites, by="samplingsite")%>% 
+            merge(meta_season, by =c("bay","month"))
+
+
+temp<- ggplot(meta.all, aes(x=mean.bay.temp, y=mean.bay.temp, colour=bay)) + 
+    geom_errorbar(aes(ymin=mean.bay.temp-sd.temp.sites, ymax=mean.bay.temp+sd.temp.sites)) +
+    geom_errorbarh(aes(xmin=mean.bay.temp-sd.seso.temp, xmax=mean.bay.temp+sd.seso.temp))+
+    theme_bw()+
+    geom_line() +
+    geom_point()+
+  
+    scale_color_manual(values=c( "mediumblue","orange2"))+
+    theme(axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          axis.title.x = element_blank(),
+          legend.position="none"
+          )+
+    labs(title="Temperature ", x="bay",y="°C")
+
+
+####pH####
+
+meta_sites <- meta.pH %>% group_by(samplingsite, bay)%>% 
+      dplyr::summarize(sd.pH.sites= sd(pH, na.rm=TRUE)) %>%  
+      ungroup() %>% 
+      dplyr::select(-bay)
+
+meta_season <- meta.pH %>% group_by(month, bay)%>% 
+      dplyr::summarize(sd.seso.pH= sd(pH, na.rm=TRUE)) %>% 
+      ungroup() %>% 
+      arrange(bay)
+
+meta_bay <- meta.pH %>% group_by(bay)%>% 
+      dplyr::summarize(mean.bay.pH= mean(pH, na.rm=TRUE)) %>% 
+      ungroup()
+
+meta.all <- meta.pH %>% 
+            merge(meta_bay, by="bay") %>% 
+            merge(meta_sites, by="samplingsite")%>% 
+            merge(meta_season, by =c("bay","month"))
+
+
+meta_bay_sd <- meta.pH %>% group_by(bay)%>% 
+      dplyr::summarize(sd.bay.pH= sd(pH, na.rm=TRUE)) %>% 
+      ungroup()
+
+ph <- ggplot(meta.all, aes(x=mean.bay.pH, y=mean.bay.pH, colour=bay)) + 
+    geom_errorbar(aes(ymin=mean.bay.pH-sd.pH.sites, ymax=mean.bay.pH+sd.pH.sites)) +
+    geom_errorbarh(aes(xmin=mean.bay.pH-sd.seso.pH, xmax=mean.bay.pH+sd.seso.pH))+
+    theme_bw()+
+    geom_line() +
+    geom_point()+
+    scale_color_manual(values=c( "mediumblue","orange2"))+
+    theme(axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+           axis.title.x = element_blank(),
+          legend.position = "none"
+          )+
+    labs(title="pH ", x="bay",y="pH")
+    #xlim(5, 9)+
+    #ylim(5,9)
+
+####SULFATE#####
+
+meta_sites <- meta.sulfate %>% 
+      group_by(samplingsite, bay)%>% 
+      dplyr::summarize(sd.sites= sd(sulfate, na.rm=TRUE)) %>% 
+      ungroup() %>% 
+      dplyr::select(-bay)
+
+meta_season <- meta.sulfate %>% 
+      group_by(month, bay)%>% 
+      dplyr::summarize(sd.seso= sd(sulfate, na.rm=TRUE)) %>% 
+      ungroup() %>% 
+      arrange(bay)
+
+meta_bay <- meta.sulfate %>% 
+      group_by(bay)%>% 
+      dplyr::summarize(mean.bay= mean(sulfate ,na.rm=TRUE)) %>% 
+      ungroup()
+
+meta.all <- meta.sulfate %>% 
+            merge(meta_bay, by="bay") %>% 
+            merge(meta_sites, by="samplingsite")%>% 
+            merge(meta_season, by =c("bay","month"))
+
+
+meta_bay_sd <- meta.sulfate %>% 
+              group_by(bay)%>% 
+             dplyr::summarize(sd.bay.sulfate= sd(sulfate, na.rm=TRUE)) %>% 
+              ungroup()
+
+
+sulfate <- ggplot(meta.all, aes(x=mean.bay, y=mean.bay, colour=bay)) + 
+    geom_errorbar(aes(ymin=mean.bay-sd.sites, ymax=mean.bay+sd.sites)) +
+    geom_errorbarh(aes(xmin=mean.bay-sd.seso, xmax=mean.bay+sd.seso))+
+    theme_bw()+
+    geom_line() +
+    geom_point()+
+    scale_color_manual(values=c( "mediumblue","orange2"))+
+    theme(axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+           axis.title.x = element_blank(),
+          legend.position = "none"
+          )+
+    labs(title="Sulfate ", x="bay",y="mM")
+
+
+#####IRON TOTAL#####
+
+meta_sites <- meta.Irontot %>% group_by(samplingsite, bay)%>% 
+      dplyr::summarize(sd.sites= sd(Irontot, na.rm=TRUE)) %>%  ungroup() %>% dplyr::select(-bay)
+
+meta_season <- meta.Irontot %>% group_by(month, bay)%>% 
+      dplyr::summarize(sd.seso= sd(Irontot, na.rm=TRUE)) %>% ungroup() %>% arrange(bay)
+
+meta_bay <- meta.Irontot %>% group_by(bay)%>% 
+      dplyr::summarize(mean.bay= mean(Irontot ,na.rm=TRUE)) %>% ungroup()
+
+meta.all <- meta.Irontot %>% merge(meta_bay, by="bay") %>% merge(meta_sites, by="samplingsite")%>% merge(meta_season, by =c("bay","month"))
+
+
+
+
+irontot <- ggplot(meta.all, aes(x=mean.bay, y=mean.bay, colour=bay)) + 
+    geom_errorbar(aes(ymin=mean.bay-sd.sites, ymax=mean.bay+sd.sites)) +
+    geom_errorbarh(aes(xmin=mean.bay-sd.seso, xmax=mean.bay+sd.seso))+
+    theme_bw()+
+    geom_line() +
+    geom_point()+
+    scale_color_manual(values=c( "mediumblue","orange2"))+
+    theme(axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+           axis.title.x = element_blank(),
+          legend.position = "none"
+          )+
+    labs(title="Total Iron ", x="bay",y="µM")
+   # xlim(0, 15)+
+   # ylim(0,15)
+
+
+
+######IRON II #####
+
+meta_sites <- meta.IronII %>% group_by(samplingsite, bay)%>% 
+      dplyr::summarize(sd.sites= sd(IronII, na.rm=TRUE)) %>%  
+      ungroup() %>% 
+      dplyr::select(-bay)
+
+meta_season <- meta.IronII %>% group_by(month, bay)%>% 
+      dplyr::summarize(sd.seso= sd(IronII, na.rm=TRUE)) %>% 
+  ungroup() %>% 
+  arrange(bay)
+
+meta_bay <- meta.IronII %>% 
+  group_by(bay)%>% 
+      dplyr::summarize(mean.bay= mean(IronII ,na.rm=TRUE)) %>% 
+  ungroup()
+
+meta.all <- meta.IronII %>% 
+  merge(meta_bay, by="bay") %>% 
+  merge(meta_sites, by="samplingsite")%>% 
+  merge(meta_season, by =c("bay","month"))
+
+
+meta_bay_sd <- meta.IronII %>% 
+  group_by(bay)%>% 
+      dplyr::summarize(sd.bay.IronII= sd(IronII, na.rm=TRUE)) %>% 
+  ungroup()
+
+iron2 <- ggplot(meta.all, aes(x=mean.bay, y=mean.bay, colour=bay)) + 
+    geom_errorbar(aes(ymin=mean.bay-sd.sites, ymax=mean.bay+sd.sites)) +
+    geom_errorbarh(aes(xmin=mean.bay-sd.seso, xmax=mean.bay+sd.seso))+
+    theme_bw()+
+    geom_line() +
+    geom_point()+
+    scale_color_manual(values=c( "mediumblue","orange2"))+
+    theme(axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+           axis.title.x = element_blank(),
+          legend.position = "none"
+          )+
+    labs(title="Iron II", x="bay",y="µM")
+   # xlim(-5, 15)+
+   # ylim(-5,15)
+
+
+#######NItrate######
+
+meta_sites <- meta.NO3._PW %>% 
+  group_by(samplingsite, bay)%>% 
+      dplyr::summarize(sd.sites= sd(NO3._PW, na.rm=TRUE)) %>%  
+  ungroup() %>% 
+  dplyr::select(-bay)
+
+meta_season <- meta.NO3._PW %>% 
+  group_by(month, bay)%>% 
+      dplyr::summarize(sd.seso= sd(NO3._PW, na.rm=TRUE)) %>% 
+  ungroup() %>% 
+  arrange(bay)
+
+meta_bay <- meta.NO3._PW %>% 
+  group_by(bay)%>% 
+      dplyr::summarize(mean.bay= mean(NO3._PW ,na.rm=TRUE)) %>% 
+  ungroup()
+
+meta.all <- meta.NO3._PW %>% 
+  merge(meta_bay, by="bay") %>%
+  merge(meta_sites, by="samplingsite")%>%
+  merge(meta_season, by =c("bay","month"))
+
+meta_bay_sd <- meta.NO3._PW %>% 
+  group_by(bay)%>% 
+      dplyr::summarize(sd.bay.NO3= sd(NO3._PW, na.rm=TRUE)) %>% 
+  ungroup()
+
+
+NO3<- ggplot(meta.all, aes(x=mean.bay, y=mean.bay, colour=bay)) + 
+    geom_errorbar(aes(ymin=mean.bay-sd.sites, ymax=mean.bay+sd.sites)) +
+    geom_errorbarh(aes(xmin=mean.bay-sd.seso, xmax=mean.bay+sd.seso))+
+    theme_bw()+
+    geom_line() +
+    geom_point()+
+    scale_color_manual(values=c( "mediumblue","orange2"))+
+    theme(axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+           axis.title.x = element_blank(),
+          legend.position = "none"
+          )+
+    labs(title="Nitrate", x="bay",y="µM")
+   # xlim(-5, 10)+
+   # ylim(-5,10)
+
+
+######NItrite######
+
+meta_sites <- meta.NO2._PW %>% 
+  group_by(samplingsite, bay)%>% 
+      dplyr::summarize(sd.sites= sd(NO2._PW, na.rm=TRUE)) %>%  
+  ungroup() %>% 
+  dplyr::select(-bay)
+
+meta_season <- meta.NO2._PW %>% 
+  group_by(month, bay)%>% 
+      dplyr::summarize(sd.seso= sd(NO2._PW, na.rm=TRUE)) %>% 
+  ungroup() %>% 
+  arrange(bay)
+
+meta_bay <- meta.NO2._PW %>% 
+  group_by(bay)%>% 
+      dplyr::summarize(mean.bay= mean(NO2._PW ,na.rm=TRUE)) %>%
+  ungroup()
+
+meta.all <- meta.NO2._PW %>% 
+  merge(meta_bay, by="bay") %>% 
+  merge(meta_sites, by="samplingsite")%>% 
+  merge(meta_season, by =c("bay","month"))
+
+meta_bay_sd <- meta.NO2._PW %>% 
+  group_by(bay)%>% 
+      dplyr::summarize(sd.bay.NO2= sd(NO2._PW, na.rm=TRUE)) %>%
+  ungroup()
+
+
+NO2 <- ggplot(meta.all, aes(x=mean.bay, y=mean.bay, colour=bay)) + 
+    geom_errorbar(aes(ymin=mean.bay-sd.sites, ymax=mean.bay+sd.sites)) +
+    geom_errorbarh(aes(xmin=mean.bay-sd.seso, xmax=mean.bay+sd.seso))+
+    theme_bw()+
+    geom_line() +
+    geom_point()+
+    scale_color_manual(values=c( "mediumblue","orange2"))+
+    theme(axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+           axis.title.x = element_blank(),
+          legend.position = "none"
+          )+
+    labs(title="Nitrite", x="bay",y="µM")
+    #xlim(-0.5, 0.6)+
+   # ylim(-0.5,0.6)
+
+
+
+######Salinity Bottom #####
+
+meta_sites <- meta.salinity_bottom %>% 
+  group_by(samplingsite, bay)%>% 
+      dplyr::summarize(sd.sites= sd(salinity_bottom, na.rm=TRUE)) %>%  
+  ungroup() %>% 
+  dplyr::select(-bay)
+
+meta_season <- meta.salinity_bottom %>% 
+  group_by(month, bay)%>% 
+      dplyr::summarize(sd.seso= sd(salinity_bottom, na.rm=TRUE)) %>% 
+  ungroup() %>% 
+  arrange(bay)
+
+meta_bay <- meta.salinity_bottom %>% 
+  group_by(bay)%>% 
+      dplyr::summarize(mean.bay= mean(salinity_bottom ,na.rm=TRUE)) %>% 
+  ungroup()
+
+meta.all <- meta.salinity_bottom %>% 
+  merge(meta_bay, by="bay") %>%
+  merge(meta_sites, by="samplingsite")%>%
+  merge(meta_season, by =c("bay","month"))
+
+
+
+
+sal <- ggplot(meta.all, aes(x=mean.bay, y=mean.bay, colour=bay)) + 
+    geom_errorbar(aes(ymin=mean.bay-sd.sites, ymax=mean.bay+sd.sites)) +
+    geom_errorbarh(aes(xmin=mean.bay-sd.seso, xmax=mean.bay+sd.seso))+
+    theme_bw()+
+    geom_line() +
+    geom_point()+
+    scale_color_manual(values=c( "mediumblue","orange2"))+
+    theme(axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          axis.title.x = element_blank(),
+          legend.position = "none"
+          )+
+    labs(title="Salinity", x="bay",y=".%")
+   # xlim(5, 8)+
+    #ylim(5,8)
+
+
+
+#######oxygen bottom#####
+
+meta_sites <- meta.oxy%>% 
+  group_by(samplingsite, bay)%>% 
+      dplyr::summarize(sd.sites= sd(oxygen1_bottom, na.rm=TRUE)) %>%  
+  ungroup() %>% 
+  dplyr::select(-bay)
+
+meta_season <- meta.oxy %>% 
+  group_by(month, bay)%>% 
+      dplyr::summarize(sd.seso= sd(oxygen1_bottom, na.rm=TRUE)) %>% 
+  ungroup() %>% 
+  arrange(bay)
+
+meta_bay <- meta.oxy %>% 
+  group_by(bay)%>% 
+      dplyr::summarize(mean.bay= mean(oxygen1_bottom ,na.rm=TRUE)) %>% 
+  ungroup()
+
+meta.all <- meta.oxy %>% 
+  merge(meta_bay, by="bay") %>% 
+  merge(meta_sites, by="samplingsite")%>% 
+  merge(meta_season, by =c("bay","month"))
+
+
+
+
+oxy <- ggplot(meta.all, aes(x=mean.bay, y=mean.bay, colour=bay)) + 
+    geom_errorbar(aes(ymin=mean.bay-sd.sites, ymax=mean.bay+sd.sites)) +
+    geom_errorbarh(aes(xmin=mean.bay-sd.seso, xmax=mean.bay+sd.seso))+
+    theme_bw()+
+    geom_line() +
+    geom_point()+
+    scale_color_manual(values=c( "mediumblue","orange2"))+
+    theme(axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+           axis.title.x = element_blank(),
+          legend.position = "none"
+          )+
+    labs(title="Oxygen", x="bay",y="mg/L")
+  #  xlim(5, 15)+
+  #  ylim(5,15)
+
+
+
+
+######Phosphate#####
+
+meta_sites <- meta.phosphate%>% 
+  group_by(samplingsite, bay)%>% 
+      dplyr::summarize(sd.sites= sd(Phosphate, na.rm=TRUE)) %>%  
+  ungroup() %>% 
+  dplyr::select(-bay)
+
+meta_season <- meta.phosphate %>% 
+  group_by(month, bay)%>% 
+      dplyr::summarize(sd.seso= sd(Phosphate, na.rm=TRUE)) %>% 
+  ungroup() %>% 
+  arrange(bay)
+
+meta_bay <- meta.phosphate %>% 
+  group_by(bay)%>% 
+      dplyr::summarize(mean.bay= mean(Phosphate ,na.rm=TRUE)) %>% 
+  ungroup()
+
+meta.all <- meta.phosphate %>% 
+  merge(meta_bay, by="bay") %>%
+  merge(meta_sites, by="samplingsite")%>%
+  merge(meta_season, by =c("bay","month"))
+
+
+
+meta_bay_sd <- meta.phosphate %>% 
+  group_by(bay)%>% 
+      dplyr::summarize(sd.bay.phosphate= sd(Phosphate, na.rm=TRUE)) %>%
+  ungroup()
+
+
+phosphate<- ggplot(meta.all, aes(x=mean.bay, y=mean.bay, colour=bay)) + 
+    geom_errorbar(aes(ymin=mean.bay-sd.sites, ymax=mean.bay+sd.sites)) +
+    geom_errorbarh(aes(xmin=mean.bay-sd.seso, xmax=mean.bay+sd.seso))+
+    theme_bw()+
+    geom_line() +
+    geom_point()+
+    scale_color_manual(values=c( "mediumblue","orange2"))+
+    theme(axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+           axis.title.x = element_blank(),
+          legend.position = "none"
+          )+
+    labs(title="Phosphate", x="bay",y="µM")
+  #  xlim(0, 350)+
+  #  ylim(0,350)
+
+
+#######OM#######
+
+meta_sites <- meta.OM%>% 
+  group_by(samplingsite, bay)%>% 
+      dplyr::summarize(sd.sites= sd(OM, na.rm=TRUE)) %>%  
+  ungroup() %>% 
+  dplyr::select(-bay)
+
+meta_season <- meta.OM %>% 
+  group_by(month, bay)%>% 
+      dplyr::summarize(sd.seso= sd(OM, na.rm=TRUE)) %>%
+  ungroup() %>% 
+  arrange(bay)
+
+meta_bay <- meta.OM %>% group_by(bay)%>% 
+      dplyr::summarize(mean.bay= mean(OM ,na.rm=TRUE)) %>% 
+  ungroup()
+
+meta.all <- meta.OM %>% 
+  merge(meta_bay, by="bay") %>% 
+  merge(meta_sites, by="samplingsite")%>% 
+  merge(meta_season, by =c("bay","month"))
+
+meta_bay_sd <- meta.OM %>% 
+  group_by(bay)%>% 
+      dplyr::summarize(sd.bay.OM= sd(OM, na.rm=TRUE)) %>% 
+  ungroup()
+
+
+OM <- ggplot(meta.all, aes(x=mean.bay, y=mean.bay, colour=bay)) + 
+    geom_errorbar(aes(ymin=mean.bay-sd.sites, ymax=mean.bay+sd.sites)) +
+    geom_errorbarh(aes(xmin=mean.bay-sd.seso, xmax=mean.bay+sd.seso))+
+    theme_bw()+
+    geom_line() +
+    geom_point()+
+    scale_color_manual(values=c( "mediumblue","orange2"))+
+    theme(axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+           axis.title.x = element_blank(),
+          legend.position = "none"
+          )+
+    labs(title="Organic matter", x="bay",y="%")
+    #xlim(20, 70)+
+   # ylim(20,70)
+
+
+####Temperature_Sediment####
+
+meta_sites <- meta.sed %>% 
+  group_by(samplingsite, bay)%>% 
+      dplyr::summarize(sd.temp.sites= mean(temp_sed, na.rm=TRUE)) %>%  
+  ungroup() %>% 
+  dplyr::select(-bay)
+
+
+meta_bay <- meta.sed%>% 
+  group_by(bay)%>% 
+      dplyr::summarize(mean.bay.temp= mean(temp_sed, na.rm=TRUE)) %>% 
+  ungroup()
+
+meta.all <- meta.sed %>% 
+  merge(meta_bay, by="bay") %>% 
+  merge(meta_sites, by="samplingsite")
+
+
+sed<- ggplot(meta.all, aes(x=mean.bay.temp, y=mean.bay.temp, colour=bay)) + 
+    geom_errorbar(aes(ymin=mean.bay.temp-sd.temp.sites, ymax=mean.bay.temp+sd.temp.sites))+
+    theme_bw()+
+    geom_line() +
+    geom_point()+
+  
+    scale_color_manual(values=c( "mediumblue","orange2"))+
+    theme(axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          axis.title.x = element_blank(),
+          legend.position="none"
+          )+
+    labs(title="Temperature Sediment", x="bay",y="°C")
+
+
+
+
+#####arrange#####
+
+
+chem <- ggarrange(temp,sed,oxy,phosphate,OM,irontot,iron2,NO3,NO2,sulfate,ph,sal, ncol=4, nrow=3)
+chem
+```
+
+
+
+```{r Chemistry sulfate fluxes - Figure 1}
+  flux <- read.csv("../../../../16S/SED/Fluxes_small_TS.csv",header=T, stringsAsFactors = FALSE)
+
+mean_flux_sites <-  flux %>% group_by(site, bay)%>% 
+      dplyr::summarize(sd.flux.sites= mean(Fluxes, na.rm=TRUE)) %>%  
+  ungroup() %>% 
+  dplyr::select(-bay)
+
+Fluxes <- flux %>% 
+  merge(mean_flux_sites, by="site")
+
+Fluxes$month <-factor(Fluxes$month, levels = c("june","november","march"))
+p<- ggplot(Fluxes, aes(x=month, y=Fluxes, fill=site)) + 
+  geom_bar(stat="identity",color="black",  
+           position=position_dodge()) +
+ scale_fill_manual(values=c( "orange2","orange2","orange2","mediumblue","mediumblue","mediumblue"))+
+  geom_hline(yintercept=1.74, linetype="dashed", color = "darkred")+
+  geom_hline(yintercept=0.83, linetype="dashed", color = "midnightblue")+
+  labs(title="Sulfate flux J @ 6 cmbsf ", x="month", y = "(mmol/cm²/s)")+
+  theme_bw()+
+  theme(legend.position="none")
+  
+print(p)
+
+
+```
+
+
+```{r Chemistry statistics }
+##Changed depending on the environmental variable tested
+B12 <- lm(OM ~   bay * month + samplingsite/replicate , data=meta,  method="REML")
+
+##anova of the model
+anov <- anova(B12)
+summary(anov)
+
+##F-statistic numerator for degrees of freedom
+summary(B12)$fstatistic
+
+##pairwise comparison of bays at each month
+
+emmeans(B12, spec="bay",by="month", contr="pairwise")
+
+plot(B12)
+E <- resid(B12)
+hist(E)
+
+```
+
+
+
+
+```{r session-info}
+# Display current R session information
+sessionInfo()
+```
+
